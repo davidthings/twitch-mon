@@ -125,6 +125,7 @@ export default function ChartsPage() {
     <Layout>
       <Box>
         <Heading size="7">Viewer Chart</Heading>
+        <Text color="gray">Access: Any channel. Requires Twitch login; no broadcaster/moderator privileges needed.</Text>
         <Separator my="3" />
         <Card mb="3">
           <Flex gap="3" align="center" wrap="wrap">

@@ -17,7 +17,15 @@ export default function Home() {
     const s = loadSettings();
     setTwitchClientId(s.twitchClientId || '');
     setTwitchClientSecret(s.twitchClientSecret || '');
-    setRedirectUri(s.redirectUri || '');
+    if (s.redirectUri) {
+      setRedirectUri(s.redirectUri);
+    } else if (typeof window !== 'undefined') {
+      const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      const suggested = `${window.location.origin}${base}`;
+      setRedirectUri(suggested);
+    } else {
+      setRedirectUri('');
+    }
   }, []);
 
   function onLogin() {

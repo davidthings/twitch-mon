@@ -1,1 +1,1 @@
-self.__REACT_LOADABLE_MANIFEST='{"pages/charts.js -> echarts":{"id":9145,"files":["static/chunks/145.6150d988bc936b49.js"]}}';
+self.__REACT_LOADABLE_MANIFEST="{\"pages/charts.js -> echarts\":{\"id\":\"pages/charts.js -> echarts\",\"files\":[\"static/chunks/node_modules_echarts_index_js.js\"]}}"

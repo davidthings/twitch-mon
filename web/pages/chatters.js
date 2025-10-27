@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
 import { useAuth } from '../lib/useAuth';
 import { getUsersByLogin, getChatters } from '../lib/helix';
-import { Box, Heading, Text, Card, Flex, TextField, Button, Separator, Code } from '@radix-ui/themes';
+import { Box, Heading, Text, Card, Flex, Button, Separator, Code } from '@radix-ui/themes';
+import Link from 'next/link';
+import { getSelectedChannel } from '../lib/settings';
 
 export default function ChattersPage() {
   const { authed, user } = useAuth();
-  const [broadcasterLogin, setBroadcasterLogin] = useState('ToastRackTV');
+  const [broadcasterLogin, setBroadcasterLogin] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
@@ -56,10 +58,12 @@ export default function ChattersPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const selected = getSelectedChannel();
+    if (selected) setBroadcasterLogin(selected);
     const last = loadJSON(LS_LAST_LOGIN, null);
-    if (last) {
-      setBroadcasterLogin(last);
-      const saved = loadJSON(resultKey(last), null);
+    const keyLogin = selected || last;
+    if (keyLogin) {
+      const saved = loadJSON(resultKey(keyLogin), null);
       if (saved) setResult(saved);
     }
   }, []);
@@ -80,12 +84,18 @@ export default function ChattersPage() {
         <Text color="gray">Requires moderator:read:chatters scope and you must be a moderator of the broadcaster.</Text>
         <Separator my="3" />
         {error && <Text color="red" as="p">Error: <Code>{error}</Code></Text>}
-        <Card mb="4">
-          <Flex gap="3" align="center" wrap="wrap">
-            <TextField.Root value={broadcasterLogin} onChange={e => setBroadcasterLogin(e.target.value)} placeholder="broadcaster login" />
-            <Button onClick={fetchChatters} disabled={loading}>Fetch chatters</Button>
-          </Flex>
-        </Card>
+        {!broadcasterLogin ? (
+          <Card mb="4">
+            <Text>Select a channel on the <Link href="/overview">Overview</Link> page.</Text>
+          </Card>
+        ) : (
+          <Card mb="4">
+            <Flex gap="3" align="center" wrap="wrap">
+              <Text>Channel: <Code>{broadcasterLogin}</Code></Text>
+              <Button onClick={fetchChatters} disabled={loading}>Fetch chatters</Button>
+            </Flex>
+          </Card>
+        )}
         {result && (
           <Card>
             <Heading size="5">{result.broadcaster.display_name} ({result.broadcaster.login}) — {result.total} chatters</Heading>

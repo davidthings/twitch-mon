@@ -10,7 +10,7 @@ export default function Nav() {
     <Flex align="center" justify="between" p="3" style={{ borderBottom: '1px solid var(--gray-6)' }}>
       <Flex gap="3" align="center">
         <Box><Link href="/"><strong>Twitch Mon</strong></Link></Box>
-        <Link href="/app">App</Link>
+        <Link href="/overview">Overview</Link>
         <Link href="/charts">Charts</Link>
         <Link href="/chatters">Chatters</Link>
       </Flex>

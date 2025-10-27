@@ -17,12 +17,15 @@ export default function Home() {
     const s = loadSettings();
     setTwitchClientId(s.twitchClientId || '');
     setTwitchClientSecret(s.twitchClientSecret || '');
-    if (s.redirectUri) {
-      setRedirectUri(s.redirectUri);
-    } else if (typeof window !== 'undefined') {
-      const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
-      const suggested = `${window.location.origin}${base}`;
-      setRedirectUri(suggested);
+    if (typeof window !== 'undefined') {
+      let base = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      if (!base && window.location.hostname.endsWith('github.io')) {
+        const firstSeg = (window.location.pathname || '/').split('/').filter(Boolean)[0] || '';
+        if (firstSeg) base = '/' + firstSeg;
+      }
+      const suggested = `${window.location.origin}${base}${base.endsWith('/') ? '' : ''}/callback/`;
+      // The above ensures origin + basePath (if any) + /callback/
+      setRedirectUri(suggested.replace(/\/\/+/g, '/').replace(':/', '://'));
     } else {
       setRedirectUri('');
     }
@@ -42,7 +45,7 @@ export default function Home() {
   }
 
   function onSaveSettings() {
-    saveSettings({ twitchClientId, twitchClientSecret, redirectUri });
+    saveSettings({ twitchClientId, twitchClientSecret });
     setSaved(true);
     setTimeout(() => setSaved(false), 1600);
   }
@@ -63,12 +66,12 @@ export default function Home() {
                 <TextField.Root value={twitchClientId} onChange={e => setTwitchClientId(e.target.value)} placeholder="u796di1d..." />
               </label>
               <label>
-                <Text as="div" size="2" color="gray">Twitch Client Secret (optional; not used in this static app)</Text>
+                <Text as="div" size="2" color="gray">Twitch Client Secret</Text>
                 <TextField.Root type="password" value={twitchClientSecret} onChange={e => setTwitchClientSecret(e.target.value)} placeholder="••••••" />
               </label>
               <label>
-                <Text as="div" size="2" color="gray">Redirect URI (optional; leave blank to auto-use current origin + /callback/)</Text>
-                <TextField.Root value={redirectUri} onChange={e => setRedirectUri(e.target.value)} placeholder="https://<user>.github.io/<repo>/callback/" />
+                <Text as="div" size="2" color="gray">Redirect URI</Text>
+                <Code>{redirectUri || '—'}</Code>
               </label>
             </Flex>
             <Flex gap="3" align="center" wrap="wrap">
@@ -107,7 +110,7 @@ export default function Home() {
               <Flex direction="column" gap="3">
                 <Text size="3">Signed in as <strong>{user?.display_name || user?.login || 'user'}</strong></Text>
                 <Flex gap="3" wrap="wrap">
-                  <Link href="/app"><Button>Open App</Button></Link>
+                  <Link href="/overview"><Button>Overview</Button></Link>
                   <Link href="/charts"><Button>Viewer Chart</Button></Link>
                   <Link href="/chatters"><Button>Chatters</Button></Link>
                 </Flex>

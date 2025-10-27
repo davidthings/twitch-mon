@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
 import { useAuth } from '../lib/useAuth';
 import { getUsersByLogin, getChatters } from '../lib/helix';
@@ -10,6 +10,17 @@ export default function ChattersPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+
+  const LS_LAST_LOGIN = 'tm_chatters_last_login';
+  const resultKey = (lg) => `tm_chatters_result_${lg}`;
+  const loadJSON = (k, d) => {
+    if (typeof window === 'undefined') return d;
+    try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : d; } catch { return d; }
+  };
+  const saveJSON = (k, v) => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+  };
 
   async function fetchChatters() {
     setLoading(true); setError(''); setResult(null);
@@ -33,12 +44,25 @@ export default function ChattersPage() {
         if (pages > 10) break; // safety cap
       } while (after);
 
-      setResult({ broadcaster: { id: b.id, login: b.login, display_name: b.display_name }, total: list.length, chatters: list });
+      const res = { broadcaster: { id: b.id, login: b.login, display_name: b.display_name }, total: list.length, chatters: list };
+      setResult(res);
+      saveJSON(LS_LAST_LOGIN, b.login);
+      saveJSON(resultKey(b.login), res);
     } catch (e) {
       setError(e.message);
     }
     setLoading(false);
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const last = loadJSON(LS_LAST_LOGIN, null);
+    if (last) {
+      setBroadcasterLogin(last);
+      const saved = loadJSON(resultKey(last), null);
+      if (saved) setResult(saved);
+    }
+  }, []);
 
   if (!authed) {
     return (

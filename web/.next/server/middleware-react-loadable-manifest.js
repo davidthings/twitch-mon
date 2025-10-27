@@ -1,1 +1,0 @@
-self.__REACT_LOADABLE_MANIFEST="{\"pages/charts.js -> echarts\":{\"id\":\"pages/charts.js -> echarts\",\"files\":[\"static/chunks/node_modules_echarts_index_js.js\"]}}"

@@ -14,8 +14,10 @@ This document explains how the web app behaves, which Twitch API endpoints are u
 - Authentication & Redirect URI
 - Channel selection
 - Charts: behavior and implementation
+- Chatters: behavior and implementation
 - Session management
 - Local storage format (per-channel)
+- Chatters storage model
 - Twitch API usage
 - Timezone handling
 - Auto-resume, peeks, and navigation behavior
@@ -75,6 +77,25 @@ Notes:
 - Gap highlighting:
   - When a time gap exceeds ~1.5× the polling interval, a placeholder {x, y: null, gap: true} is injected and rendered as a shaded markArea.
 
+## Chatters: behavior and implementation
+
+- Primary chart: per-user presence timeline recorded continuously (online and offline).
+- Visualization:
+  - Each chatter is a row; horizontal bars indicate intervals when the user is present in the current chat list.
+  - Rows are ordered with currently present users first, then alphabetical.
+  - X-axis is time and initially spans roughly the last hour plus a small forward pad. Y-axis ticks are hidden; user labels appear in tooltips.
+- Interaction:
+  - Session chips mirror the viewers chart: OFFLINE (when not live), the active LIVE session, and up to 5 recent finished sessions.
+  - Selecting a session only sets the time window on the x-axis. Data is not filtered; pre/post-online presence remains visible in the window.
+- Timezone:
+  - Uses the same timezone control as charts. "System" uses the browser tz; supports search, aliases (e.g., PST → America/Los_Angeles), and recents.
+- Live updates:
+  - Polls Helix Get Chatters every 10s (paged, safety cap 10 pages). When a user appears, a new segment opens; when they disappear, the segment is closed with an end timestamp. Open segments render to "now".
+- Sessionization:
+  - Live session id comes from Get Streams (`stream.started_at`). Session chips are used purely for navigation of the time window; recording continues regardless of online status.
+- Rendering details:
+  - Implemented with an ECharts custom series that renders rectangles per interval, with universal transitions and resize on mount/update.
+
 ## Session management
 
 - Session definition: a contiguous online period. A session begins when Twitch `Get Streams` reports the channel online and ends when it goes offline.
@@ -121,6 +142,19 @@ Key naming is scoped by login to keep channels isolated.
 ### Migration from legacy points
 
 - If legacy `tm_charts_points_<login>` exists and no sessions are present, the app migrates those points into a single historical session (id = first sample time ISO), then removes the legacy key.
+
+## Chatters storage model
+
+- Presence (continuous, per broadcaster login):
+  - `tm_chatters_presence_<login>` (JSON object)
+    - Shape: `{ users: { <login>: { name: string, intervals: [{ start: epoch_ms, end: epoch_ms | null }] } } }`
+    - Intervals persist across online/offline; `end: null` means an interval is currently open.
+- Session metadata and selection (shared with charts; used only to pick x-axis window):
+  - `tm_charts_sessions_<login>` — session list (includes `id`, `start`, `end`).
+  - `tm_charts_selected_session_<login>` — last selected session id or 'offline'.
+- Chatters page convenience keys:
+  - `tm_chatters_last_login` — last broadcaster login used on Chatters.
+  - `tm_chatters_result_<login>` — last fetched chatters list snapshot; used to pre-seed rows and labels.
 
 ## Twitch API usage
 

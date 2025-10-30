@@ -17,6 +17,7 @@ export default function ChattersChart() {
   const [login, setLogin] = useState('');
   const [broadcasterId, setBroadcasterId] = useState(null);
   const [rows, setRows] = useState([]);
+  const rowsRef = useRef([]);
   const segmentsRef = useRef(new Map());
   const namesRef = useRef(new Map());
   const pollRef = useRef(null);
@@ -25,6 +26,9 @@ export default function ChattersChart() {
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const activeSessionIdRef = useRef(null);
   const [isLive, setIsLive] = useState(false);
+  const [pollInfo, setPollInfo] = useState({ at: null, count: 0, error: '' });
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugObj, setDebugObj] = useState(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -45,6 +49,9 @@ export default function ChattersChart() {
     }
     setTzList(list);
   }, []);
+
+  // Keep a live reference to the current rows
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   useEffect(() => {
     if (!broadcasterId || !user) return;
@@ -75,7 +82,7 @@ export default function ChattersChart() {
             if (last && last.end == null) last.end = now;
           }
         }
-        let nextRows = rows.slice();
+        let nextRows = (rowsRef.current || []).slice();
         for (const [loginKey, info] of present.entries()) {
           if (!segs.has(loginKey)) segs.set(loginKey, []);
           const arr = segs.get(loginKey);
@@ -92,24 +99,62 @@ export default function ChattersChart() {
           return a.localeCompare(b);
         });
         if (!disposed) {
-          setRows(nextRows);
-          setTick(t => t + 1);
-          const sel = (selectedSessionId && selectedSessionId !== 'offline') ? selectedSessionId : activeSessionIdRef.current;
-          const name = (login||'').trim();
-          if (sel && name) {
-            const obj = { users: {} };
-            for (const [k, arr] of segs.entries()) {
-              obj.users[k] = { name: namesRef.current.get(k) || k, intervals: arr.map(s => ({ start: s.start, end: s.end == null ? null : s.end })) };
-            }
-            saveJSON(presenceKey(name, sel), obj);
+          // Only update rows if the order or length changed
+          const prev = rowsRef.current || [];
+          let changed = nextRows.length !== prev.length;
+          if (!changed) {
+            for (let i = 0; i < nextRows.length; i++) { if (nextRows[i] !== prev[i]) { changed = true; break; } }
           }
+          if (changed) setRows(nextRows);
+          setTick(t => t + 1);
+          const name = (login||'').trim();
+          if (name) {
+            const existing = loadJSON(presenceAllKeyNorm(name), loadJSON(presenceAllKeyLegacy(name), null));
+            const base = (existing && existing.users) ? { users: { ...existing.users } } : { users: {} };
+            // Overwrite with latest in-memory segments for currently tracked users
+            for (const [k, arr] of segmentsRef.current.entries()) {
+              base.users[k] = { name: (namesRef.current.get(k) || (existing && existing.users && existing.users[k] && existing.users[k].name) || k), intervals: arr.map(s => ({ start: s.start, end: s.end == null ? null : s.end })) };
+            }
+            saveJSON(presenceAllKeyNorm(name), base);
+            setDebugObj(base);
+          }
+          setPollInfo({ at: Date.now(), count: present.size, error: '' });
         }
-      } catch {}
+      } catch (e) {
+        if (!disposed) setPollInfo({ at: Date.now(), count: 0, error: (e && e.message) ? String(e.message) : 'poll failed' });
+      }
     }
     pollOnce();
-    pollRef.current = setInterval(pollOnce, 10000);
+    pollRef.current = setInterval(pollOnce, 5000);
     return () => { disposed = true; if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [broadcasterId, user, rows, selectedSessionId, login]);
+  }, [broadcasterId, user, login]);
+
+  useEffect(() => {
+    const name = (login||'').trim();
+    if (name) {
+      let obj = loadJSON(presenceAllKeyNorm(name), null);
+      if (!obj) {
+        const legacy = loadJSON(presenceAllKeyLegacy(name), null);
+        if (legacy) { obj = legacy; saveJSON(presenceAllKeyNorm(name), legacy); }
+      }
+      const segs = new Map();
+      const labels = new Map();
+      const r = [];
+      if (obj && obj.users) {
+        for (const k of Object.keys(obj.users)) {
+          const u = obj.users[k];
+          labels.set(k, u.name || k);
+          segs.set(k, u.intervals.map(it => ({ start: it.start, end: it.end == null ? null : it.end })));
+          r.push(k);
+        }
+      }
+      namesRef.current = labels;
+      segmentsRef.current = segs;
+      setRows(r);
+      setTick(t => t + 1);
+      if (obj) setDebugObj(obj);
+    }
+  }, [login]);
 
   const tzAliases = useMemo(() => ({
     PST: 'America/Los_Angeles', PDT: 'America/Los_Angeles',
@@ -155,6 +200,8 @@ export default function ChattersChart() {
   const sessionsKey = (lg) => `tm_charts_sessions_${(lg||'').trim()}`;
   const selectedSessionKey = (lg) => `tm_charts_selected_session_${(lg||'').trim()}`;
   const presenceKey = (lg, id) => `tm_chatters_presence_${(lg||'').trim()}_${id}`;
+  const presenceAllKeyLegacy = (lg) => `tm_chatters_presence_${(lg||'').trim()}`;
+  const presenceAllKeyNorm = (lg) => `tm_chatters_presence_${(lg||'').trim().toLowerCase()}`;
 
   const tzResolved = timeZone === 'system' ? undefined : timeZone;
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
@@ -204,6 +251,46 @@ export default function ChattersChart() {
       }
       const selSaved = loadJSON(selectedSessionKey(lg), null);
       if (selSaved) setSelectedSessionId(selSaved);
+      // Migrate any per-session presence keys to continuous key if needed
+      let cont = loadJSON(presenceAllKeyNorm(lg), null);
+      if (!cont) {
+        const legacy = loadJSON(presenceAllKeyLegacy(lg), null);
+        if (legacy) { cont = legacy; saveJSON(presenceAllKeyNorm(lg), legacy); }
+      }
+      if (!cont && Array.isArray(sess) && sess.length > 0) {
+        const merged = { users: {} };
+        for (const s of sess) {
+          const per = loadJSON(presenceKey(lg, s.id), null);
+          if (!per || !per.users) continue;
+          for (const k of Object.keys(per.users)) {
+            const u = per.users[k];
+            if (!merged.users[k]) merged.users[k] = { name: (u && u.name) || k, intervals: [] };
+            const src = Array.isArray(u && u.intervals) ? u.intervals : [];
+            merged.users[k].intervals.push(...src.map(it => ({ start: it.start, end: it.end == null ? null : it.end })));
+          }
+        }
+        // Optional: sort and coalesce intervals per user
+        for (const k of Object.keys(merged.users)) {
+          const arr = merged.users[k].intervals.filter(it => typeof it.start === 'number');
+          arr.sort((a,b) => a.start - b.start);
+          const out = [];
+          for (const it of arr) {
+            const last = out[out.length - 1];
+            if (!last) { out.push({ start: it.start, end: it.end == null ? null : it.end }); continue; }
+            const lastEnd = last.end == null ? Infinity : last.end;
+            const curEnd = it.end == null ? Infinity : it.end;
+            if (it.start <= lastEnd) {
+              // merge overlap/adjacent
+              last.end = Math.max(lastEnd, curEnd);
+              if (!isFinite(last.end)) last.end = null;
+            } else {
+              out.push({ start: it.start, end: it.end == null ? null : it.end });
+            }
+          }
+          merged.users[k].intervals = out;
+        }
+        saveJSON(presenceAllKeyNorm(lg), merged);
+      }
     }
   }, []);
 
@@ -270,7 +357,7 @@ export default function ChattersChart() {
     pollStream();
     return () => clearInterval(t);
   }, [login]);
-
+  // Initialize chart once, windowed by selected session (view only)
   useEffect(() => {
     let disposed = false;
     async function init() {
@@ -282,11 +369,25 @@ export default function ChattersChart() {
       chartInstance.current = inst;
       const handleResize = () => inst.resize();
       window.addEventListener('resize', handleResize);
+
       const now = Date.now();
       const ONE_HOUR = 60 * 60 * 1000;
-      const PAD = 5 * 60 * 1000;
-      const minX = now - ONE_HOUR;
-      const maxX = now + PAD;
+      const PRE_PAD = 30 * 60 * 1000;
+      const LIVE_PAD = 5 * 60 * 1000;
+      const FINISHED_PAD = 30 * 60 * 1000;
+      let minX = now - ONE_HOUR;
+      let maxX = now + LIVE_PAD;
+      if (selectedSessionId && selectedSessionId !== 'offline' && Array.isArray(sessions)) {
+        const activeId = activeSessionIdRef.current;
+        const meta = sessions.find(s => s.id === selectedSessionId) || (activeId ? sessions.find(s => s.id === activeId) : null);
+        if (meta) {
+          const start = typeof meta.start === 'number' ? meta.start : (Date.parse(meta.id) || now);
+          const end = meta.end || null;
+          minX = start - PRE_PAD;
+          maxX = end ? (end + FINISHED_PAD) : (now + LIVE_PAD);
+        }
+      }
+
       inst.setOption({
         animation: false,
         grid: [{ left: 40, right: 16, top: 16, bottom: 40, containLabel: true }],
@@ -317,7 +418,7 @@ export default function ChattersChart() {
             type: 'custom',
             name: 'Presence',
             coordinateSystem: 'cartesian2d',
-            renderItem: function(params, api) {
+            renderItem: function (params, api) {
               const start = api.value(0);
               const end = api.value(1);
               const row = api.value(2);
@@ -328,11 +429,7 @@ export default function ChattersChart() {
               const h = Math.max(2, band * 0.6);
               const left = Math.min(x0, x1);
               const width = Math.max(1, Math.abs(x1 - x0));
-              return {
-                type: 'rect',
-                shape: { x: left, y: y - h / 2, width: width, height: h },
-                style: api.style({ fill: '#4f46e5' })
-              };
+              return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill: '#4f46e5' }) };
             },
             universalTransition: true,
             clip: true,
@@ -347,39 +444,46 @@ export default function ChattersChart() {
       } else {
         setTimeout(() => inst.resize(), 0);
       }
-      return () => {
-        window.removeEventListener('resize', handleResize);
-        inst.dispose();
-      };
+      return () => { window.removeEventListener('resize', handleResize); inst.dispose(); };
     }
     const cleanup = init();
     return () => { disposed = true; Promise.resolve(cleanup).then(fn => fn && fn()); };
   }, []);
-
+  // Update x-axis window when TZ/session/live state changes
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
     const now = Date.now();
     const ONE_HOUR = 60 * 60 * 1000;
-    const PAD = 5 * 60 * 1000;
-    const minX = now - ONE_HOUR;
-    const maxX = now + PAD;
+    const PRE_PAD = 30 * 60 * 1000;
+    const LIVE_PAD = 5 * 60 * 1000;
+    const FINISHED_PAD = 30 * 60 * 1000;
+    let minX = now - ONE_HOUR;
+    let maxX = now + LIVE_PAD;
+    if (selectedSessionId && selectedSessionId !== 'offline' && Array.isArray(sessions)) {
+      const activeId = activeSessionIdRef.current;
+      const meta = sessions.find(s => s.id === selectedSessionId) || (activeId ? sessions.find(s => s.id === activeId) : null);
+      if (meta) {
+        const start = typeof meta.start === 'number' ? meta.start : (Date.parse(meta.id) || now);
+        const end = meta.end || null;
+        minX = start - PRE_PAD;
+        maxX = end ? (end + FINISHED_PAD) : (now + LIVE_PAD);
+      }
+    }
     inst.setOption({
       axisPointer: { label: { formatter: (obj) => {
         const raw = obj && obj.value;
         const val = Array.isArray(raw) ? raw[0] : raw;
         if (typeof val === 'number' && isFinite(val)) return dtfFull.format(val);
-        if (typeof val === 'string') {
-          const t = Date.parse(val);
-          if (!Number.isNaN(t)) return dtfFull.format(t);
-        }
+        if (typeof val === 'string') { const t = Date.parse(val); if (!Number.isNaN(t)) return dtfFull.format(t); }
         return String(val ?? '');
       } } },
       xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
     }, { notMerge: false });
     inst.resize();
-  }, [timeZone]);
+  }, [timeZone, selectedSessionId, sessions, isLive, tick]);
 
+  // Update series data when rows or segments change
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
@@ -401,7 +505,7 @@ export default function ChattersChart() {
           type: 'custom',
           name: 'Presence',
           coordinateSystem: 'cartesian2d',
-          renderItem: function(params, api) {
+          renderItem: function (params, api) {
             const start = api.value(0);
             const end = api.value(1);
             const row = api.value(2);
@@ -411,7 +515,7 @@ export default function ChattersChart() {
             const band = api.size([0, 1])[1];
             const h = Math.max(2, band * 0.6);
             const left = Math.min(x0, x1);
-            const width = Math.max(1, Math.abs(x1 - x0));
+            const width = Math.max(8, Math.abs(x1 - x0));
             return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill: '#4f46e5' }) };
           },
           universalTransition: true,
@@ -426,43 +530,6 @@ export default function ChattersChart() {
   }, [rows, tick]);
 
   useEffect(() => {
-    const name = (login||'').trim();
-    if (!name) return;
-    const sess = loadJSON(sessionsKey(name), []);
-    setSessions(Array.isArray(sess) ? sess : []);
-  }, [login]);
-
-  useEffect(() => {
-    const name = (login||'').trim();
-    if (!name) return;
-    if (!selectedSessionId || selectedSessionId === 'offline') { segmentsRef.current = new Map(); setRows([]); setTick(t => t + 1); return; }
-    const obj = loadJSON(presenceKey(name, selectedSessionId), null);
-    const segs = new Map();
-    const labels = new Map();
-    const r = [];
-    if (obj && obj.users) {
-      for (const k of Object.keys(obj.users)) {
-        const u = obj.users[k];
-        labels.set(k, u && u.name ? u.name : k);
-        const arr = Array.isArray(u && u.intervals) ? u.intervals.map(s => ({ start: s.start, end: s.end == null ? null : s.end })) : [];
-        segs.set(k, arr);
-        r.push(k);
-      }
-    }
-    namesRef.current = labels;
-    segmentsRef.current = segs;
-    setRows(r);
-    setTick(t => t + 1);
-  }, [selectedSessionId, login]);
-
-  useEffect(() => {
-    const name = (login||'').trim();
-    if (!name) return;
-    if (selectedSessionId == null) return;
-    saveJSON(selectedSessionKey(name), selectedSessionId);
-  }, [selectedSessionId, login]);
-
-  useEffect(() => {
     if (!login) return;
     if (selectedSessionId) return;
     if (!Array.isArray(sessions) || sessions.length === 0) return;
@@ -475,6 +542,8 @@ export default function ChattersChart() {
   return (
     <Card>
       <Heading size="5">Chatters Timeline — {rows.length} users</Heading>
+      {pollInfo.error && (<Text color="red" as="p">Polling error: <Code>{pollInfo.error}</Code></Text>)}
+      {!pollInfo.error && pollInfo.at && (<Text color="gray" as="p">Last poll: {dtfFull.format(pollInfo.at)} — present: {pollInfo.count}</Text>)}
       <Separator my="3" />
       <Flex align="center" gap="2" wrap="wrap">
         {!tzEditing ? (
@@ -482,6 +551,7 @@ export default function ChattersChart() {
             <Text>Timezone:</Text>
             <Code>{timeZone === 'system' ? 'System' : timeZone}</Code>
             <Button variant="soft" onClick={() => setTzEditing(true)}>Change</Button>
+            <Button variant={showDebug ? 'solid' : 'soft'} color="gray" onClick={() => setShowDebug(v => !v)}>Debug</Button>
           </Flex>
         ) : (
           <Box style={{ width: '100%' }}>
@@ -512,6 +582,14 @@ export default function ChattersChart() {
           </Box>
         )}
       </Flex>
+      {showDebug && debugObj && (
+        <Box mt="2" style={{ border: '1px solid var(--gray-6)', borderRadius: 6, padding: 6, maxHeight: 240, overflow: 'auto', background: 'var(--gray-2)' }}>
+          <Text as="div" color="gray" mb="1">Presence snapshot (saved each poll)</Text>
+          <pre style={{ margin: 0, fontSize: 12 }}>
+{JSON.stringify(debugObj, null, 2)}
+          </pre>
+        </Box>
+      )}
       <Separator my="3" />
       <Flex align="center" gap="2" wrap="wrap">
         <Text>Session:</Text>

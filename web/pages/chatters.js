@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
+import ChattersChart from '../components/ChattersChart';
 import { useAuth } from '../lib/useAuth';
 import { getUsersByLogin, getChatters } from '../lib/helix';
 import { Box, Heading, Text, Card, Flex, Button, Separator, Code } from '@radix-ui/themes';
@@ -12,6 +13,7 @@ export default function ChattersPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  const [visible, setVisible] = useState(false);
 
   const LS_LAST_LOGIN = 'tm_chatters_last_login';
   const resultKey = (lg) => `tm_chatters_result_${lg}`;
@@ -56,6 +58,19 @@ export default function ChattersPage() {
     setLoading(false);
   }
 
+  function handleToggle() {
+    if (visible) {
+      setVisible(false);
+      return;
+    }
+    if (result) {
+      setVisible(true);
+      return;
+    }
+    fetchChatters();
+    setVisible(true);
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const selected = getSelectedChannel();
@@ -92,11 +107,11 @@ export default function ChattersPage() {
           <Card mb="4">
             <Flex gap="3" align="center" wrap="wrap">
               <Text>Channel: <Code>{broadcasterLogin}</Code></Text>
-              <Button onClick={fetchChatters} disabled={loading}>Fetch chatters</Button>
+              <Button onClick={handleToggle} disabled={loading}>{visible ? 'Hide Chatters' : 'Show Chatters'}</Button>
             </Flex>
           </Card>
         )}
-        {result && (
+        {visible && result && (
           <Card>
             <Heading size="5">{result.broadcaster.display_name} ({result.broadcaster.login}) — {result.total} chatters</Heading>
             <Box mt="2" style={{ maxHeight: 360, overflow: 'auto' }}>
@@ -108,6 +123,9 @@ export default function ChattersPage() {
             </Box>
           </Card>
         )}
+        <Box mt="4">
+          <ChattersChart />
+        </Box>
       </Box>
     </Layout>
   );

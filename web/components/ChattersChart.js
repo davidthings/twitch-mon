@@ -94,8 +94,14 @@ export default function ChattersChart() {
               const outc = outs.length || Math.max(0, Math.abs((p && p.data && p.data.value && p.data.value[1]) || 0));
               const net = inc - outc;
               const when = (typeof t === 'number' && isFinite(t)) ? dtfFull.format(t) : '';
-              const insStr = ins.length ? ins.join(', ') : '—';
-              const outsStr = outs.length ? outs.join(', ') : '—';
+              const MAXN = 5;
+              const fmtList = (arr) => {
+                if (!arr || arr.length === 0) return '—';
+                const head = arr.slice(0, MAXN);
+                return head.join(', ') + (arr.length > MAXN ? ', …' : '');
+              };
+              const insStr = fmtList(ins);
+              const outsStr = fmtList(outs);
               // If hovering one bar, still show both counts if names available
               return `${when}<br/>+${inc} in, -${outc} out (net ${net >= 0 ? '+' : ''}${net})<br/>In: ${insStr}<br/>Out: ${outsStr}`;
             } catch {

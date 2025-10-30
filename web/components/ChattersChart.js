@@ -35,6 +35,14 @@ export default function ChattersChart() {
   const [visRows, setVisRows] = useState([]);
   const [flowPoints, setFlowPoints] = useState([]);
   const [fitMode, setFitMode] = useState(false);
+  const [pinRight, setPinRight] = useState(false);
+  const [winStart, setWinStart] = useState(null);
+  const [winEnd, setWinEnd] = useState(null);
+  const [nowMarkTs, setNowMarkTs] = useState(() => Date.now());
+  const zoomLockRef = useRef(false);
+  const [chartReady, setChartReady] = useState(false);
+  const lastFullRef = useRef({ min: null, max: null });
+  const lastSelRef = useRef({ start: null, end: null });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -107,7 +115,8 @@ export default function ChattersChart() {
       } else {
         setTimeout(() => inst.resize(), 0);
       }
-      return () => { window.removeEventListener('resize', handleResize); inst.dispose(); };
+      setChartReady(true);
+      return () => { window.removeEventListener('resize', handleResize); inst.dispose(); setChartReady(false); };
     }
     const cleanup = init();
     return () => { disposed = true; Promise.resolve(cleanup).then(fn => fn && fn()); };
@@ -216,8 +225,25 @@ export default function ChattersChart() {
     const now = Date.now();
     const segs = segmentsRef.current;
     const stats = [];
+    // Determine current window for filtering
+    let wStart = winStart, wEnd = winEnd;
+    const inst = chartInstance.current;
+    if (inst && (wStart == null || wEnd == null)) {
+      const opt = inst.getOption();
+      const xa = opt && opt.xAxis && opt.xAxis[0] || {};
+      if (typeof xa.min === 'number' && typeof xa.max === 'number') { wStart = xa.min; wEnd = xa.max; }
+    }
     for (const loginKey of rows) {
       const arr = segs.get(loginKey) || [];
+      // Filter out users that don't intersect the window if we have one
+      if (typeof wStart === 'number' && typeof wEnd === 'number') {
+        let intersects = false;
+        for (const seg of arr) {
+          const e = seg.end == null ? now : seg.end;
+          if (seg.start <= wEnd && e >= wStart) { intersects = true; break; }
+        }
+        if (!intersects) continue;
+      }
       const last = arr[arr.length - 1];
       const present = !!(last && last.end == null);
       const currentStart = present ? last.start : null;
@@ -240,7 +266,7 @@ export default function ChattersChart() {
     });
     const list = (filterMode === 'present') ? presentStats : [...presentStats, ...notPresentStats];
     setVisRows(list.map(x => x.login));
-  }, [rows, tick, filterMode]);
+  }, [rows, tick, filterMode, winStart, winEnd]);
 
   useEffect(() => {
     const name = (login||'').trim();
@@ -270,8 +296,23 @@ export default function ChattersChart() {
       setFlowPoints(Array.isArray(flowSaved) ? flowSaved : []);
       const savedFit = loadJSON(fitKeyNorm(name), null);
       setFitMode(!!savedFit);
+      const savedWin = loadJSON(windowKeyNorm(name), null);
+      if (savedWin && typeof savedWin.start === 'number' && typeof savedWin.end === 'number' && savedWin.end > savedWin.start) {
+        setWinStart(savedWin.start);
+        setWinEnd(savedWin.end);
+      } else {
+        const now = Date.now();
+        setWinStart(now - 60 * 60 * 1000); // default 1h on first run when not fit
+        setWinEnd(now);
+      }
     }
   }, [login]);
+
+  // Throttle 'now' mark line updates (every ~10s)
+  useEffect(() => {
+    const t = setInterval(() => setNowMarkTs(Date.now()), 10000);
+    return () => clearInterval(t);
+  }, []);
 
   const tzAliases = useMemo(() => ({
     PST: 'America/Los_Angeles', PDT: 'America/Los_Angeles',
@@ -321,6 +362,7 @@ export default function ChattersChart() {
   const presenceAllKeyNorm = (lg) => `tm_chatters_presence_${(lg||'').trim().toLowerCase()}`;
   const flowKeyNorm = (lg) => `tm_chatters_flow_${(lg||'').trim().toLowerCase()}`;
   const fitKeyNorm = (lg) => `tm_chatters_fit_mode_${(lg||'').trim().toLowerCase()}`;
+  const windowKeyNorm = (lg) => `tm_chatters_window_${(lg||'').trim().toLowerCase()}`;
 
   const tzResolved = timeZone === 'system' ? undefined : timeZone;
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
@@ -336,7 +378,7 @@ export default function ChattersChart() {
     if (!segs || segs.size === 0) return null;
     let min = Infinity;
     let max = -Infinity;
-    const now = Date.now();
+    const now = nowMarkTs;
     for (const arr of segs.values()) {
       for (const seg of arr) {
         if (typeof seg.start !== 'number') continue;
@@ -352,7 +394,7 @@ export default function ChattersChart() {
   function windowHasData(minX, maxX) {
     const segs = segmentsRef.current;
     if (!segs || segs.size === 0) return false;
-    const now = Date.now();
+    const now = nowMarkTs;
     for (const arr of segs.values()) {
       for (const seg of arr) {
         if (typeof seg.start !== 'number') continue;
@@ -589,6 +631,20 @@ export default function ChattersChart() {
         } },
         xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
         yAxis: [{ type: 'value', min: -0.5, max: 0.5, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' }],
+        dataZoom: [
+          {
+            type: 'slider',
+            show: true,
+            xAxisIndex: 0,
+            filterMode: 'none',
+            throttle: 100,
+            height: 24,
+            bottom: 4,
+            brushSelect: false,
+            startValue: minX,
+            endValue: maxX,
+          }
+        ],
         series: [
           {
             type: 'custom',
@@ -628,38 +684,71 @@ export default function ChattersChart() {
     const cleanup = init();
     return () => { disposed = true; Promise.resolve(cleanup).then(fn => fn && fn()); };
   }, []);
-  // Update x-axis window when TZ/session/live state changes
+  // Update x-axis full extent and selection window (overview never re-ranges)
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
     const now = Date.now();
-    const ONE_HOUR = 60 * 60 * 1000;
     const PRE_PAD = 30 * 60 * 1000;
     const LIVE_PAD = 5 * 60 * 1000;
     const FINISHED_PAD = 30 * 60 * 1000;
-    let minX = now - OFFLINE_WINDOW_MS;
-    let maxX = now + LIVE_PAD;
+    // Full extent (overview track)
+    let fullMin = now - OFFLINE_WINDOW_MS;
+    let fullMax = now + LIVE_PAD;
     const ext = getDataExtent();
+    if (ext) { fullMin = ext.min - PRE_PAD; fullMax = ext.max + LIVE_PAD; }
+    // Selection window (thumbs)
+    let selStart = winStart, selEnd = winEnd;
     if (fitMode && ext) {
-      minX = ext.min - PRE_PAD;
-      maxX = ext.max + LIVE_PAD;
-    } else {
-    if (selectedSessionId && selectedSessionId !== 'offline' && Array.isArray(sessions)) {
-      const activeId = activeSessionIdRef.current;
-      const meta = sessions.find(s => s.id === selectedSessionId) || (activeId ? sessions.find(s => s.id === activeId) : null);
-      if (meta) {
-        const start = typeof meta.start === 'number' ? meta.start : (Date.parse(meta.id) || now);
-        const end = meta.end || null;
-        minX = start - PRE_PAD;
-        maxX = end ? (end + FINISHED_PAD) : (now + LIVE_PAD);
+      selStart = fullMin; selEnd = fullMax;
+    } else if (!(selStart != null && selEnd != null && selEnd > selStart)) {
+      if (selectedSessionId && selectedSessionId !== 'offline' && Array.isArray(sessions)) {
+        const activeId = activeSessionIdRef.current;
+        const meta = sessions.find(s => s.id === selectedSessionId) || (activeId ? sessions.find(s => s.id === activeId) : null);
+        if (meta) {
+          const start = typeof meta.start === 'number' ? meta.start : (Date.parse(meta.id) || now);
+          const end = meta.end || null;
+          selStart = start - PRE_PAD;
+          selEnd = end ? (end + FINISHED_PAD) : (now + LIVE_PAD);
+        }
+      }
+      // Fallbacks
+      if (!(selStart != null && selEnd != null && selEnd > selStart)) {
+        if (ext) { selStart = fullMin; selEnd = fullMax; }
+        else { selStart = now - 60 * 60 * 1000; selEnd = now; }
       }
     }
-    // If the current window has no intervals but we have data, auto-fit to the data extent
-    if (ext && !windowHasData(minX, maxX)) {
-      minX = ext.min - PRE_PAD;
-      maxX = ext.max + LIVE_PAD;
+    // If selection has no data but data exists, auto-fit selection to data extent
+    if (ext && selStart != null && selEnd != null && !windowHasData(selStart, selEnd)) {
+      selStart = fullMin; selEnd = fullMax;
     }
+    // Clamp selection to full extent to keep slider sane
+    if (selStart != null && selEnd != null) {
+      if (ext) {
+        selStart = Math.max(fullMin, Math.min(selStart, fullMax));
+        selEnd = Math.max(fullMin, Math.min(selEnd, fullMax));
+        if (selEnd <= selStart) selEnd = Math.min(fullMax, selStart + 60 * 1000);
+      }
     }
+    // Apply pin-right: if pinned, keep end at fullMax as time advances
+    if (pinRight && selEnd != null && fullMax != null && selEnd !== fullMax) {
+      selEnd = fullMax;
+      if (winEnd !== selEnd) {
+        setWinEnd(selEnd);
+        const name = (login||'').trim();
+        if (name) saveJSON(windowKeyNorm(name), { start: selStart, end: selEnd });
+      }
+    }
+    // Only update if values actually changed
+    const lastFull = lastFullRef.current;
+    const lastSel = lastSelRef.current;
+    const needFull = fullMin !== lastFull.min || fullMax !== lastFull.max;
+    const needSel = selStart !== lastSel.start || selEnd !== lastSel.end;
+    if (!needFull && !needSel) return;
+    lastFullRef.current = { min: fullMin, max: fullMax };
+    lastSelRef.current = { start: selStart, end: selEnd };
+    // Apply: xAxis shows full extent; dataZoom thumbs show selection
+    zoomLockRef.current = true;
     inst.setOption({
       axisPointer: { label: { formatter: (obj) => {
         const raw = obj && obj.value;
@@ -668,17 +757,91 @@ export default function ChattersChart() {
         if (typeof val === 'string') { const t = Date.parse(val); if (!Number.isNaN(t)) return dtfFull.format(t); }
         return String(val ?? '');
       } } },
-      xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
+      xAxis: needFull ? [{ type: 'time', min: fullMin, max: fullMax, axisLabel: { formatter: (val) => dtfTick.format(val) } }] : undefined,
+      dataZoom: needSel ? [
+        {
+          type: 'slider',
+          show: true,
+          xAxisIndex: 0,
+          filterMode: 'none',
+          throttle: 100,
+          height: 24,
+          bottom: 4,
+          brushSelect: false,
+          startValue: selStart,
+          endValue: selEnd,
+        }
+      ] : undefined,
     }, { notMerge: false });
     inst.resize();
     const flowInst = flowChartInstance.current;
-    if (flowInst) {
-      flowInst.setOption({ xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }] }, { notMerge: false });
+    if (flowInst && needSel) {
+      flowInst.setOption({ xAxis: [{ type: 'time', min: selStart, max: selEnd, axisLabel: { formatter: (val) => dtfTick.format(val) } }] }, { notMerge: false });
       flowInst.resize();
     }
-  }, [timeZone, selectedSessionId, sessions, isLive, tick, fitMode]);
+    setTimeout(() => { zoomLockRef.current = false; }, 0);
+  }, [timeZone, selectedSessionId, sessions, isLive, fitMode, winStart, winEnd, chartReady]);
 
-  // Update flow chart data
+  // Handle dataZoom (range selector) changes with snapping (60s)
+  useEffect(() => {
+    const inst = chartInstance.current;
+    if (!inst || !chartReady) return;
+    const SNAP_MS = 60 * 1000;
+    const handler = (params) => {
+      if (zoomLockRef.current) return;
+      try {
+        const dz = params && (params.batch ? params.batch[0] : params) || {};
+        let s = (typeof dz.startValue === 'number') ? dz.startValue : null;
+        let e = (typeof dz.endValue === 'number') ? dz.endValue : null;
+        if (s == null || e == null) {
+          const opt = inst.getOption();
+          const dz0 = opt && opt.dataZoom && opt.dataZoom[0];
+          if (dz0) { s = dz0.startValue; e = dz0.endValue; }
+        }
+        if (typeof s !== 'number' || typeof e !== 'number' || !(e > s)) return;
+        let ss = s, ee = e;
+        if (Array.isArray(sessions)) {
+          const bounds = [];
+          for (const meta of sessions) {
+            if (meta && typeof meta.start === 'number') bounds.push(meta.start);
+            if (meta && typeof meta.end === 'number') bounds.push(meta.end);
+          }
+          const snap = (val) => {
+            let best = val, bestD = SNAP_MS + 1;
+            for (const b of bounds) {
+              if (typeof b !== 'number') continue;
+              const d = Math.abs(val - b);
+              if (d < bestD) { bestD = d; best = b; }
+            }
+            return bestD <= SNAP_MS ? best : val;
+          };
+          ss = snap(s);
+          ee = snap(e);
+          if (!(ee > ss)) { ee = s; ss = s; }
+        }
+        // Determine if end thumb is at right edge (pin it)
+        const PRE_PAD = 30 * 60 * 1000;
+        const LIVE_PAD = 5 * 60 * 1000;
+        const ext = getDataExtent();
+        let fullMax = ee;
+        if (ext) fullMax = ext.max + LIVE_PAD;
+        const atRight = typeof fullMax === 'number' && Math.abs(ee - fullMax) <= SNAP_MS;
+        setPinRight(atRight);
+        const name = (login||'').trim();
+        setFitMode(false);
+        setWinStart(ss);
+        setWinEnd(ee);
+        if (name) saveJSON(windowKeyNorm(name), { start: ss, end: ee });
+        zoomLockRef.current = true;
+        inst.dispatchAction({ type: 'dataZoom', startValue: ss, endValue: ee, xAxisIndex: 0 });
+        setTimeout(() => { zoomLockRef.current = false; }, 0);
+      } catch {}
+    };
+    inst.on('dataZoom', handler);
+    return () => { inst.off('dataZoom', handler); };
+  }, [sessions, login, chartReady]);
+
+  // Update flow chart series data (linked to window elsewhere)
   useEffect(() => {
     const inst = flowChartInstance.current;
     if (!inst) return;
@@ -697,8 +860,13 @@ export default function ChattersChart() {
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
-    const now = Date.now();
+    const now = nowMarkTs;
     const dataArr = [];
+    // Determine current window from chart option for clipping
+    let wStart = null, wEnd = null;
+    const opt = inst.getOption();
+    const xa = opt && opt.xAxis && opt.xAxis[0] || {};
+    if (typeof xa.min === 'number' && typeof xa.max === 'number') { wStart = xa.min; wEnd = xa.max; }
     const segs = segmentsRef.current;
     for (let i = 0; i < visRows.length; i++) {
       const loginKey = visRows[i];
@@ -707,12 +875,61 @@ export default function ChattersChart() {
       const presentFlag = (arr.length > 0 && arr[arr.length - 1].end == null) ? 1 : 0;
       for (let idx = 0; idx < arr.length; idx++) {
         const seg = arr[idx];
-        dataArr.push({ id: `${loginKey}__${idx}`, value: [seg.start, (seg.end == null ? now : seg.end), rowIndex, presentFlag], login: loginKey });
+        const segEnd = (seg.end == null ? now : seg.end);
+        let s0 = seg.start;
+        let e0 = segEnd;
+        let clipL = 0, clipR = 0;
+        if (typeof wStart === 'number' && s0 < wStart) { s0 = wStart; clipL = 1; }
+        if (typeof wEnd === 'number' && e0 > wEnd) { e0 = wEnd; clipR = 1; }
+        if (s0 >= e0) continue;
+        dataArr.push({ id: `${loginKey}__${idx}`, value: [s0, e0, rowIndex, presentFlag, clipL, clipR], login: loginKey });
+      }
+    }
+    // Build session markAreas
+    const sessAreas = [];
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      for (const s of sessions) {
+        const st = typeof s.start === 'number' ? s.start : Date.parse(s.id);
+        const en = (s.end || null);
+        if (typeof st === 'number') {
+          sessAreas.push([{ xAxis: st }, { xAxis: en || now }]);
+        }
       }
     }
     inst.setOption({
-      yAxis: [{ type: 'value', min: -0.5, max: visRows.length - 0.5, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' }],
+      yAxis: [
+        { type: 'value', min: -0.5, max: visRows.length - 0.5, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' },
+        { type: 'value', min: 0, max: 'dataMax', axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, axisLine: { show: false } }
+      ],
       series: [
+        {
+          type: 'line',
+          name: 'Present count (overview)',
+          step: 'end',
+          symbol: 'none',
+          smooth: false,
+          z: 1,
+          yAxisIndex: 1,
+          lineStyle: { color: '#64748b', opacity: 0.25, width: 1 },
+          areaStyle: { color: '#64748b', opacity: 0.08 },
+          data: (() => {
+            // Build step series from all intervals
+            const events = [];
+            for (const arr of segmentsRef.current.values()) {
+              for (const seg of arr) {
+                if (typeof seg.start === 'number') events.push([seg.start, +1]);
+                if (typeof seg.end === 'number') events.push([seg.end, -1]);
+              }
+            }
+            events.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
+            let cur = 0; const out = [];
+            for (const ev of events) { cur += ev[1]; out.push([ev[0], Math.max(0, cur)]); }
+            if (out.length === 0) return out;
+            // ensure now point (matches NOW mark line)
+            out.push([now, Math.max(0, cur)]);
+            return out;
+          })(),
+        },
         {
           type: 'custom',
           name: 'Presence',
@@ -722,27 +939,60 @@ export default function ChattersChart() {
             const end = api.value(1);
             const row = api.value(2);
             const present = api.value(3) === 1;
+            const clipL = api.value(4) === 1;
+            const clipR = api.value(5) === 1;
             const x0 = api.coord([start, row])[0];
             const x1 = api.coord([end, row])[0];
             const y = api.coord([start, row])[1];
             const band = api.size([0, 1])[1];
             const h = Math.max(2, band * 0.6);
-            const left = Math.min(x0, x1);
-            const width = Math.max(8, Math.abs(x1 - x0));
+            let left = Math.min(x0, x1);
+            let width = Math.max(1, Math.abs(x1 - x0));
+            // If the bar is effectively zero-width (newly opened presence), render a 1px bar just to the left of NOW
+            if (Math.abs(x1 - x0) < 0.5) {
+              left = x0 - 1;
+              width = 1;
+            }
             const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
             const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
-            return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill, opacity }) };
+            const children = [
+              { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill, opacity }) },
+            ];
+            const stubW = 6;
+            const stubH = Math.max(2, h * 0.6);
+            const stubStyle = { fill, opacity: 0.3 };
+            if (clipL) children.push({ type: 'rect', shape: { x: left - stubW - 1, y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
+            if (clipR) children.push({ type: 'rect', shape: { x: left + Math.max(0, width - stubW - 1), y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
+            return { type: 'group', children };
           },
           universalTransition: true,
           clip: true,
-          dimensions: ['start', 'end', 'row', 'present'],
+          dimensions: ['start', 'end', 'row', 'present', 'clipL', 'clipR'],
           encode: { x: [0, 1], y: 2 },
+          markArea: sessAreas.length ? { itemStyle: { color: '#64748b22' }, data: sessAreas } : undefined,
+          markLine: {
+            symbol: 'none',
+            lineStyle: { color: '#94a3b8', width: 1, type: 'solid' },
+            label: {
+              show: true,
+              formatter: (p) => {
+                try {
+                  const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null)));
+                  return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : '';
+                } catch { return ''; }
+              },
+              color: '#475569',
+              backgroundColor: 'transparent',
+            },
+            silent: true,
+            data: [{ xAxis: nowMarkTs }]
+          },
           data: dataArr,
         }
       ]
     }, { notMerge: false });
     inst.resize();
-  }, [visRows, tick]);
+  }, [visRows, tick, sessions, nowMarkTs]);
 
   useEffect(() => {
     if (!login) return;
@@ -777,7 +1027,7 @@ export default function ChattersChart() {
                 setFitMode(next);
                 const name = (login||'').trim();
                 if (name) saveJSON(fitKeyNorm(name), next);
-                if (next) fitToData();
+                if (next) { setPinRight(true); fitToData(); }
               }}
             >Fit mode</Button>
           </Flex>

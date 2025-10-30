@@ -2,6 +2,13 @@
 
 A minimal local Node.js app to authenticate with Twitch (OAuth2 Authorization Code) and call Helix endpoints.
 
+> Note
+>
+> This root folder contains an ultra‑simple HTML/JS sample (with a tiny Node helper) intended for local OAuth/Helix testing only. If you’re looking for the real, full‑featured web app (Next.js SPA with charts, sessions, storage, etc.), see:
+>
+> - web/README.md
+> - web/ (app source)
+
 ## Prereqs
 - Node.js 18+ recommended
 - A Twitch Developer application

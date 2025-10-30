@@ -15,6 +15,7 @@ This document explains how the web app behaves, which Twitch API endpoints are u
 - Channel selection
 - Charts: behavior and implementation
 - Chatters: behavior and implementation
+  - Chatters flow chart (arrivals/departures)
 - Session management
 - Local storage format (per-channel)
 - Chatters storage model
@@ -82,19 +83,30 @@ Notes:
 - Primary chart: per-user presence timeline recorded continuously (online and offline).
 - Visualization:
   - Each chatter is a row; horizontal bars indicate intervals when the user is present in the current chat list.
-  - Rows are ordered with currently present users first, then alphabetical.
-  - X-axis is time and initially spans roughly the last hour plus a small forward pad. Y-axis ticks are hidden; user labels appear in tooltips.
+  - Rows are ordered with present users first (longest current duration → latest visit → login), then not-present users (latest visit → login).
+  - Filter modes: "In chat now" (only present users) and "All users" (present first, then not-present). In "All users", not-present bars are colored orange.
+  - Tooltips show start → end and duration for each interval.
+  - X-axis is time. OFFLINE default window shows ~last 3 hours; session chips only change the visible window.
 - Interaction:
   - Session chips mirror the viewers chart: OFFLINE (when not live), the active LIVE session, and up to 5 recent finished sessions.
   - Selecting a session only sets the time window on the x-axis. Data is not filtered; pre/post-online presence remains visible in the window.
 - Timezone:
   - Uses the same timezone control as charts. "System" uses the browser tz; supports search, aliases (e.g., PST → America/Los_Angeles), and recents.
 - Live updates:
-  - Polls Helix Get Chatters every 10s (paged, safety cap 10 pages). When a user appears, a new segment opens; when they disappear, the segment is closed with an end timestamp. Open segments render to "now".
+  - Polls Helix Get Chatters every ~5s (paged, safety cap 10 pages). When a user appears, a new segment opens; when they disappear, the segment is closed with an end timestamp. Open segments render to "now".
 - Sessionization:
   - Live session id comes from Get Streams (`stream.started_at`). Session chips are used purely for navigation of the time window; recording continues regardless of online status.
 - Rendering details:
   - Implemented with an ECharts custom series that renders rectangles per interval, with universal transitions and resize on mount/update.
+
+### Chatters flow chart (arrivals/departures)
+
+- Secondary chart below the timeline shows room churn per poll (not a net delta):
+  - Green bars: arrivals (number of users whose interval opened that poll).
+  - Red bars: departures (number of users whose open interval closed that poll), rendered as negative bars (downwards).
+- Tooltip on bar hover shows timestamp, +in / -out counts, net, and the list of names arriving/leaving.
+- Shares the same x-axis window as the timeline.
+- Fit mode: when enabled, both charts auto-fit to the data extent with padding and remain fitted across updates/reloads.
 
 ## Session management
 
@@ -155,6 +167,8 @@ Key naming is scoped by login to keep channels isolated.
 - Chatters page convenience keys:
   - `tm_chatters_last_login` — last broadcaster login used on Chatters.
   - `tm_chatters_result_<login>` — last fetched chatters list snapshot; used to pre-seed rows and labels.
+  - `tm_chatters_flow_<login-lowercase>` — array of flow points `{ t: epoch_ms, in: number, out: number, ins: string[], outs: string[] }` (arrivals/departures and names) with a rolling cap.
+  - `tm_chatters_fit_mode_<login-lowercase>` — boolean; when true, x-axis is kept fitted to data.
 
 ## Twitch API usage
 

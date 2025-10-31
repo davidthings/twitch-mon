@@ -115,11 +115,11 @@ export default function ChattersChart() {
             }
           }
         },
-        xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
+        xAxis: [{ type: 'time', boundaryGap: false, min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
         yAxis: [{ type: 'value', min: 'dataMin', max: 'dataMax', name: 'Flow' }],
         series: [
-          { type: 'bar', name: 'Arrivals', barWidth: 14, itemStyle: { color: '#10b981' }, data: [] },
-          { type: 'bar', name: 'Departures', barWidth: 14, itemStyle: { color: '#ef4444' }, data: [] },
+          { type: 'bar', name: 'Arrivals', barWidth: 10, barGap: '0%', itemStyle: { color: '#10b981' }, data: [] },
+          { type: 'bar', name: 'Departures', barWidth: 10, barGap: '0%', itemStyle: { color: '#ef4444' }, data: [] },
         ],
       });
       if (typeof requestAnimationFrame !== 'undefined') {
@@ -679,25 +679,31 @@ export default function ChattersChart() {
           }
           return String(val ?? '');
         } } },
-        tooltip: { trigger: 'item', formatter: (p) => {
-          const d = p && p.data;
-          const loginKey = d && d.login;
-          const uname = (loginKey && namesRef.current.get(loginKey)) || loginKey || '';
-          const s = d ? d.value[0] : null;
-          const e = d ? d.value[1] : null;
-          const sStr = (typeof s === 'number') ? dtfFull.format(s) : '';
-          const eStr = (typeof e === 'number') ? dtfFull.format(e) : '';
-          const endTs = (typeof e === 'number' ? e : Date.now());
-          const startTs = (typeof s === 'number' ? s : endTs);
-          let dur = Math.max(0, endTs - startTs);
-          const totalSec = Math.floor(dur / 1000);
-          const h = Math.floor(totalSec / 3600);
-          const m = Math.floor((totalSec % 3600) / 60);
-          const sec = totalSec % 60;
-          const durStr = h > 0 ? `${h}h ${m}m ${sec}s` : (m > 0 ? `${m}m ${sec}s` : `${sec}s`);
-          return `${uname} (${loginKey})<br/>${sStr} → ${eStr || 'now'}<br/>duration: ${durStr}`;
+        tooltip: { trigger: 'item', formatter: (params) => {
+          try {
+            const p = Array.isArray(params) ? params[0] : params;
+            const d = p && p.data;
+            const loginKey = d && d.login;
+            const uname = (loginKey && namesRef.current.get(loginKey)) || loginKey || '';
+            const val = d && Array.isArray(d.value) ? d.value : null;
+            const s = val ? val[0] : null;
+            const e = val ? val[1] : null;
+            const sStr = (typeof s === 'number') ? dtfFull.format(s) : '';
+            const eStr = (typeof e === 'number') ? dtfFull.format(e) : '';
+            const endTs = (typeof e === 'number' ? e : Date.now());
+            const startTs = (typeof s === 'number' ? s : endTs);
+            let dur = Math.max(0, endTs - startTs);
+            const totalSec = Math.floor(dur / 1000);
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const sec = totalSec % 60;
+            const durStr = h > 0 ? `${h}h ${m}m ${sec}s` : (m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+            return `${uname} (${loginKey || ''})<br/>${sStr} → ${eStr || 'now'}<br/>duration: ${durStr}`;
+          } catch {
+            return ' ';
+          }
         } },
-        xAxis: [{ type: 'time', min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
+        xAxis: [{ type: 'time', boundaryGap: false, min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
         yAxis: [{ type: 'value', min: -0.5, max: 0.5, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' }],
         dataZoom: [
           {
@@ -709,6 +715,10 @@ export default function ChattersChart() {
             height: 24,
             bottom: 4,
             brushSelect: false,
+            showDetail: true,
+            labelFormatter: (val) => {
+              try { return (typeof val === 'number' && isFinite(val)) ? dtfFull.format(val) : ''; } catch { return ''; }
+            },
             startValue: minX,
             endValue: maxX,
           }
@@ -732,7 +742,7 @@ export default function ChattersChart() {
               const width = Math.max(1, Math.abs(x1 - x0));
               const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
               const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
-              return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill, opacity }) };
+              return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: { fill, opacity } };
             },
             universalTransition: true,
             clip: true,
@@ -825,7 +835,7 @@ export default function ChattersChart() {
         if (typeof val === 'string') { const t = Date.parse(val); if (!Number.isNaN(t)) return dtfFull.format(t); }
         return String(val ?? '');
       } } },
-      xAxis: needFull ? [{ type: 'time', min: fullMin, max: fullMax, axisLabel: { formatter: (val) => dtfTick.format(val) } }] : undefined,
+      xAxis: needFull ? [{ type: 'time', boundaryGap: false, min: fullMin, max: fullMax, axisLabel: { formatter: (val) => dtfTick.format(val) } }] : undefined,
       dataZoom: [
         {
           type: 'slider',

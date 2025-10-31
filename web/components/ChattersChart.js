@@ -43,6 +43,12 @@ export default function ChattersChart() {
   const [chartReady, setChartReady] = useState(false);
   const lastFullRef = useRef({ min: null, max: null });
   const lastSelRef = useRef({ start: null, end: null });
+  const [search, setSearch] = useState('');
+  const [pinMode, setPinMode] = useState(false);
+  const [pinnedArr, setPinnedArr] = useState([]);
+  const pinnedSet = useMemo(() => new Set(Array.isArray(pinnedArr) ? pinnedArr : []), [pinnedArr]);
+  const [yStartIdx, setYStartIdx] = useState(0);
+  const [yEndIdx, setYEndIdx] = useState(0);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -227,6 +233,25 @@ export default function ChattersChart() {
     return () => { disposed = true; if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [broadcasterId, user, login]);
 
+  // Initialize / adjust vertical window when the visible rows list changes
+  useEffect(() => {
+    const n = visRows.length;
+    if (n === 0) { setYStartIdx(0); setYEndIdx(0); return; }
+    const prevStart = yStartIdx;
+    const prevEnd = yEndIdx;
+    const defaultWindow = Math.min(250, n - 1);
+    let ns = prevStart, ne = prevEnd;
+    if (!(prevStart >= 0 && prevEnd >= prevStart && prevEnd < n)) {
+      ns = 0; ne = defaultWindow;
+    } else {
+      // Clamp to new bounds
+      ns = Math.max(0, Math.min(prevStart, n - 1));
+      ne = Math.max(ns, Math.min(prevEnd, n - 1));
+    }
+    if (ns !== yStartIdx) setYStartIdx(ns);
+    if (ne !== yEndIdx) setYEndIdx(ne);
+  }, [visRows.length]);
+
   useEffect(() => {
     const now = Date.now();
     const segs = segmentsRef.current;
@@ -250,6 +275,12 @@ export default function ChattersChart() {
         }
         if (!intersects) continue;
       }
+      // Search filter
+      const q = (search || '').trim().toLowerCase();
+      if (q) {
+        const display = (namesRef.current.get(loginKey) || loginKey || '').toLowerCase();
+        if (!display.includes(q)) continue;
+      }
       const last = arr[arr.length - 1];
       const present = !!(last && last.end == null);
       const currentStart = present ? last.start : null;
@@ -271,8 +302,12 @@ export default function ChattersChart() {
       return a.login.localeCompare(b.login);
     });
     const list = (filterMode === 'present') ? presentStats : [...presentStats, ...notPresentStats];
-    setVisRows(list.map(x => x.login));
-  }, [rows, tick, filterMode, winStart, winEnd]);
+    // Pinned first
+    const pinnedFirst = [];
+    const rest = [];
+    for (const it of list) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+    setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+  }, [rows, tick, filterMode, winStart, winEnd, search, pinnedSet]);
 
   useEffect(() => {
     const name = (login||'').trim();
@@ -311,6 +346,8 @@ export default function ChattersChart() {
         setWinStart(now - 60 * 60 * 1000); // default 1h on first run when not fit
         setWinEnd(now);
       }
+      const savedPins = loadJSON(pinsKeyNorm(name), []);
+      setPinnedArr(Array.isArray(savedPins) ? savedPins : []);
     }
   }, [login]);
 
@@ -319,6 +356,30 @@ export default function ChattersChart() {
     const t = setInterval(() => setNowMarkTs(Date.now()), 10000);
     return () => clearInterval(t);
   }, []);
+
+  // Click-to-pin handler (active only in pin mode)
+  useEffect(() => {
+    if (!pinMode) return;
+    const inst = chartInstance.current;
+    if (!inst) return;
+    const handler = (p) => {
+      try {
+        const d = p && p.data;
+        const loginKey = d && d.login;
+        if (!loginKey) return;
+        setPinnedArr(prev => {
+          const arr = Array.isArray(prev) ? prev.slice() : [];
+          const idx = arr.indexOf(loginKey);
+          if (idx === -1) arr.push(loginKey); else arr.splice(idx, 1);
+          const name = (login||'').trim();
+          if (name) saveJSON(pinsKeyNorm(name), arr);
+          return arr;
+        });
+      } catch {}
+    };
+    inst.on('click', handler);
+    return () => { inst.off('click', handler); };
+  }, [pinMode, login]);
 
   const tzAliases = useMemo(() => ({
     PST: 'America/Los_Angeles', PDT: 'America/Los_Angeles',
@@ -369,6 +430,7 @@ export default function ChattersChart() {
   const flowKeyNorm = (lg) => `tm_chatters_flow_${(lg||'').trim().toLowerCase()}`;
   const fitKeyNorm = (lg) => `tm_chatters_fit_mode_${(lg||'').trim().toLowerCase()}`;
   const windowKeyNorm = (lg) => `tm_chatters_window_${(lg||'').trim().toLowerCase()}`;
+  const pinsKeyNorm = (lg) => `tm_chatters_pins_${(lg||'').trim().toLowerCase()}`;
 
   const tzResolved = timeZone === 'system' ? undefined : timeZone;
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
@@ -764,7 +826,7 @@ export default function ChattersChart() {
         return String(val ?? '');
       } } },
       xAxis: needFull ? [{ type: 'time', min: fullMin, max: fullMax, axisLabel: { formatter: (val) => dtfTick.format(val) } }] : undefined,
-      dataZoom: needSel ? [
+      dataZoom: [
         {
           type: 'slider',
           show: true,
@@ -777,7 +839,7 @@ export default function ChattersChart() {
           startValue: selStart,
           endValue: selEnd,
         }
-      ] : undefined,
+      ],
     }, { notMerge: false });
     inst.resize();
     const flowInst = flowChartInstance.current;
@@ -788,7 +850,7 @@ export default function ChattersChart() {
     setTimeout(() => { zoomLockRef.current = false; }, 0);
   }, [timeZone, selectedSessionId, sessions, isLive, fitMode, winStart, winEnd, chartReady]);
 
-  // Handle dataZoom (range selector) changes with snapping (60s)
+  // Handle dataZoom (range selector) changes with snapping (60s) and y-zoom windowing
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst || !chartReady) return;
@@ -797,6 +859,7 @@ export default function ChattersChart() {
       if (zoomLockRef.current) return;
       try {
         const dz = params && (params.batch ? params.batch[0] : params) || {};
+        // Currently only handle x-axis range selector
         let s = (typeof dz.startValue === 'number') ? dz.startValue : null;
         let e = (typeof dz.endValue === 'number') ? dz.endValue : null;
         if (s == null || e == null) {
@@ -1017,55 +1080,52 @@ export default function ChattersChart() {
       {!pollInfo.error && pollInfo.at && (<Text color="gray" as="p">Last poll: {dtfFull.format(pollInfo.at)} — present: {pollInfo.count}</Text>)}
       <Separator my="3" />
       <Flex align="center" gap="2" wrap="wrap">
-        {!tzEditing ? (
+        <Text>Timezone:</Text>
+        <Code>{timeZone === 'system' ? 'System' : timeZone}</Code>
+        <Button variant="soft" onClick={() => setTzEditing(true)}>Change</Button>
+        <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
+        <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
+        <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
+        <Button
+          variant={fitMode ? 'solid' : 'soft'}
+          color="gray"
+          onClick={() => {
+            const next = !fitMode;
+            setFitMode(next);
+            const name = (login||'').trim();
+            if (name) saveJSON(fitKeyNorm(name), next);
+            if (next) { setPinRight(true); fitToData(); }
+          }}
+        >Fit mode</Button>
+        <Button variant={pinMode ? 'solid' : 'soft'} color="indigo" onClick={() => setPinMode(v => !v)}>Pin mode</Button>
+        <TextField.Root value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users" />
+      </Flex>
+      {tzEditing && (
+        <Box mt="2">
           <Flex align="center" gap="2" wrap="wrap">
-            <Text>Timezone:</Text>
-            <Code>{timeZone === 'system' ? 'System' : timeZone}</Code>
-            <Button variant="soft" onClick={() => setTzEditing(true)}>Change</Button>
-            <Button variant={showDebug ? 'solid' : 'soft'} color="gray" onClick={() => setShowDebug(v => !v)}>Debug</Button>
-            <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
-            <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
-            <Button
-              variant={fitMode ? 'solid' : 'soft'}
-              color="gray"
-              onClick={() => {
-                const next = !fitMode;
-                setFitMode(next);
-                const name = (login||'').trim();
-                if (name) saveJSON(fitKeyNorm(name), next);
-                if (next) { setPinRight(true); fitToData(); }
-              }}
-            >Fit mode</Button>
+            <TextField.Root value={tzInput} onChange={e => setTzInput(e.target.value)} placeholder="e.g. Los Angeles, PST, Europe/Paris" />
+            <Button variant="soft" onClick={() => applyTz(tzInput.trim())}>Set TZ</Button>
+            <Button variant="soft" color="gray" onClick={() => setTzEditing(false)}>Cancel</Button>
+            <Button variant={timeZone==='UTC' ? 'solid' : 'soft'} onClick={() => applyTz('UTC')}>UTC</Button>
           </Flex>
-        ) : (
-          <Box style={{ width: '100%' }}>
-            <Flex align="center" gap="2" wrap="wrap">
-              <Text>Timezone:</Text>
-              <Button variant={timeZone==='system' ? 'solid' : 'soft'} onClick={() => applyTz('system')}>System</Button>
-              <Button variant={timeZone==='UTC' ? 'solid' : 'soft'} onClick={() => applyTz('UTC')}>UTC</Button>
-              <TextField.Root value={tzInput} onChange={e => setTzInput(e.target.value)} placeholder="e.g. Los Angeles, PST, Europe/Paris" />
-              <Button variant="soft" onClick={() => applyTz(tzInput.trim())}>Set TZ</Button>
-              <Button variant="soft" color="gray" onClick={() => setTzEditing(false)}>Cancel</Button>
+          {(tzRecents && tzRecents.length > 0) && (
+            <Flex mt="2" gap="2" wrap="wrap">
+              {tzRecents.map((z) => (
+                <Button key={z} variant="soft" onClick={() => applyTz(z)}>{z}</Button>
+              ))}
             </Flex>
-            {(tzRecents && tzRecents.length > 0) && (
-              <Flex mt="2" gap="2" wrap="wrap">
-                {tzRecents.map((z) => (
+          )}
+          {tzSuggestions.length > 0 && (
+            <Box style={{ marginTop: 6, border: '1px solid var(--gray-6)', borderRadius: 6, padding: 6, maxHeight: 180, overflow: 'auto' }}>
+              <Flex gap="2" wrap="wrap">
+                {tzSuggestions.map((z) => (
                   <Button key={z} variant="soft" onClick={() => applyTz(z)}>{z}</Button>
                 ))}
               </Flex>
-            )}
-            {tzSuggestions.length > 0 && (
-              <Box style={{ marginTop: 6, border: '1px solid var(--gray-6)', borderRadius: 6, padding: 6, maxHeight: 180, overflow: 'auto' }}>
-                <Flex gap="2" wrap="wrap">
-                  {tzSuggestions.map((z) => (
-                    <Button key={z} variant="soft" onClick={() => applyTz(z)}>{z}</Button>
-                  ))}
-                </Flex>
-              </Box>
-            )}
-          </Box>
-        )}
-      </Flex>
+            </Box>
+          )}
+        </Box>
+      )}
       {showDebug && debugObj && (
         <Box mt="2" style={{ border: '1px solid var(--gray-6)', borderRadius: 6, padding: 6, maxHeight: 240, overflow: 'auto', background: 'var(--gray-2)' }}>
           <Text as="div" color="gray" mb="1">Presence snapshot (saved each poll)</Text>

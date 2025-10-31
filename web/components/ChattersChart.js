@@ -599,6 +599,65 @@ export default function ChattersChart() {
     inst.resize();
   }
 
+  const exportPresenceJson = useMemo(() => () => {
+    const name = (login || '').trim();
+    const users = {};
+    for (const [k, arr] of segmentsRef.current.entries()) {
+      users[k] = {
+        name: namesRef.current.get(k) || k,
+        intervals: (Array.isArray(arr) ? arr : []).map(s => ({ start: s.start, end: s.end == null ? null : s.end }))
+      };
+    }
+    const payload = { channel: name, exportedAt: Date.now(), sessions: Array.isArray(sessions) ? sessions : [], selectedSessionId: selectedSessionId || null, users };
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tm_presence_${name || 'channel'}_${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [login, sessions, selectedSessionId]);
+
+  const importPresenceJson = useMemo(() => () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = async (e) => {
+      try {
+        const file = e && e.target && e.target.files && e.target.files[0];
+        if (!file) return;
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        if (!payload || typeof payload !== 'object') return;
+        const users = payload.users || {};
+        const segs = new Map();
+        const labels = new Map();
+        const r = [];
+        for (const k of Object.keys(users)) {
+          const u = users[k] || {};
+          labels.set(k, u.name || k);
+          const src = Array.isArray(u.intervals) ? u.intervals : [];
+          segs.set(k, src.map(it => ({ start: it.start, end: it.end == null ? null : it.end })));
+          r.push(k);
+        }
+        namesRef.current = labels;
+        segmentsRef.current = segs;
+        setRows(r);
+        const sess = Array.isArray(payload.sessions) ? payload.sessions : [];
+        setSessions(sess);
+        const sel = payload.selectedSessionId || null;
+        if (sel != null) setSelectedSessionId(sel);
+        setTick(t => t + 1);
+        // Optionally fit to the imported data
+        setTimeout(() => { try { fitToData(); } catch {} }, 0);
+      } catch {}
+    };
+    input.click();
+  }, []);
+
   function isValidTZ(tz) {
     if (!tz || tz === 'system') return true;
     try { new Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
@@ -1321,21 +1380,37 @@ export default function ChattersChart() {
         clip: true,
         dimensions: ['start', 'end', 'row', 'present', 'clipL', 'clipR'],
         encode: { x: [0, 1], y: 2 },
-        markArea: sessAreas.length ? { itemStyle: { color: '#64748b22' }, data: sessAreas } : undefined,
-        markLine: { symbol: 'none', lineStyle: { color: '#94a3b8', width: 1, type: 'solid' }, label: { show: true, formatter: (p) => {
-          try { const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null))); return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : ''; } catch { return ''; }
-        }, color: '#475569', backgroundColor: 'transparent' }, silent: true, data: [{ xAxis: nowMarkTs }] },
+        markArea: sessAreas.length ? { silent: true, tooltip: { show: false }, itemStyle: { color: '#64748b22' }, data: sessAreas } : undefined,
+        markLine: {
+          symbol: 'none',
+          lineStyle: { color: '#94a3b8', width: 1, type: 'solid' },
+          label: {
+            show: true,
+            formatter: (p) => {
+              try {
+                const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null)));
+                return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : '';
+              } catch { return ''; }
+            },
+            color: '#475569',
+            backgroundColor: 'transparent',
+          },
+          silent: true,
+          data: [{ xAxis: nowMarkTs }]
+        },
         data: dataArr,
-      }
+      },
     ];
     if (!hasHi) {
-      seriesUpdate.push({ id: 'presence-hi', type: 'custom', name: 'Presence highlight', coordinateSystem: 'cartesian2d', z: 20, clip: true, renderItem: function (params, api) {
+      seriesUpdate.push({ id: 'presence-hi', type: 'custom', name: 'Presence highlight', coordinateSystem: 'cartesian2d', z: 20, clip: true, silent: true, tooltip: { show: false }, renderItem: function (params, api) {
         const start = api.value(0); const end = api.value(1); const row = api.value(2);
         const x0 = api.coord([start, row])[0]; const x1 = api.coord([end, row])[0]; const y = api.coord([start, row])[1];
         const band = api.size([0, 1])[1]; const h = Math.max(3, band * 0.8);
         let left = Math.min(x0, x1); let width = Math.max(1, Math.abs(x1 - x0)); if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
         return { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill: '#facc15', opacity: 0.85, stroke: '#111827', lineWidth: 1 } };
       }, data: hiExistingData });
+    } else {
+      seriesUpdate.push({ id: 'presence-hi', silent: true, tooltip: { show: false } });
     }
     inst.setOption({
       yAxis: [
@@ -1347,19 +1422,18 @@ export default function ChattersChart() {
     inst.resize();
   }, [visRows, tick, sessions, nowMarkTs]);
 
-  // Bind hover handlers once, throttled and cached
+  // Hover handlers to populate highlight overlay for the hovered user
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst || !chartReady) return;
     const updateHi = (loginKey) => {
       try {
-        // Fast duplicate check
         if (lastHoverLoginRef.current === loginKey) return;
         lastHoverLoginRef.current = loginKey;
-        // Determine window
+        // Determine current window from xAxis
         let wStartH = null, wEndH = null;
         const optH = inst.getOption();
-        const xaH = optH && optH.xAxis && optH.xAxis[0] || {};
+        const xaH = (optH && optH.xAxis && optH.xAxis[0]) || {};
         if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
         const key = `${loginKey}|${wStartH}|${wEndH}`;
         let hi = hiCacheRef.current.get(key);
@@ -1404,7 +1478,7 @@ export default function ChattersChart() {
       inst.off('mouseover', onOver);
       inst.off('globalout', onOut);
     };
-  }, [chartReady]);
+  }, [chartReady, nowMarkTs]);
 
   useEffect(() => {
     if (!login) return;
@@ -1427,6 +1501,8 @@ export default function ChattersChart() {
         <Code>{timeZone === 'system' ? 'System' : timeZone}</Code>
         <Button variant="soft" onClick={() => setTzEditing(true)}>Change</Button>
         <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
+        <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
+        <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
         <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
         <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
         <Button

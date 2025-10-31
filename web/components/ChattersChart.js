@@ -76,6 +76,41 @@ export default function ChattersChart() {
     setTzList(list);
   }, []);
 
+  const clearChatterAndSessions = useMemo(() => () => {
+    const name = (login || '').trim();
+    if (!name) return;
+    try {
+      if (!window.confirm('Delete all chatter and session data for this channel? This cannot be undone.')) return;
+      const prefNorm = presenceAllKeyNorm(name);
+      const prefLegacy = presenceAllKeyLegacy(name);
+      const sessK = sessionsKey(name);
+      const selSessK = selectedSessionKey(name);
+      const flowK = flowKeyNorm(name);
+      const resK = resultKey(name);
+      try { localStorage.removeItem(prefNorm); } catch {}
+      try { localStorage.removeItem(prefLegacy); } catch {}
+      try { localStorage.removeItem(sessK); } catch {}
+      try { localStorage.removeItem(selSessK); } catch {}
+      try { localStorage.removeItem(flowK); } catch {}
+      try { localStorage.removeItem(resK); } catch {}
+      const prefixA = `tm_chatters_presence_${(name||'').trim()}_`;
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (k.startsWith(prefixA)) {
+          try { localStorage.removeItem(k); } catch {}
+        }
+      }
+    } finally {
+      segmentsRef.current = new Map();
+      setRows([]);
+      setSessions([]);
+      setSelectedSessionId(null);
+      setFlowPoints([]);
+      setTick(t => t + 1);
+    }
+  }, [login]);
+
   // Initialize duration distribution chart once
   useEffect(() => {
     let disposed = false;
@@ -1503,6 +1538,7 @@ export default function ChattersChart() {
         <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
         <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
         <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
+        <Button variant="soft" color="red" onClick={clearChatterAndSessions}>Clear chatter + sessions</Button>
         <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
         <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
         <Button

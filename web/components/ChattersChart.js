@@ -209,7 +209,7 @@ export default function ChattersChart() {
               return { type: 'rect', shape: { x: left, y: top, width, height }, style: { fill: '#ef4444' } };
             },
             data: []
-          },
+          }
         ],
       });
       if (typeof requestAnimationFrame !== 'undefined') {

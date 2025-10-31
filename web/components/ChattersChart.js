@@ -25,6 +25,10 @@ export default function ChattersChart() {
   const segmentsRef = useRef(new Map());
   const namesRef = useRef(new Map());
   const pollRef = useRef(null);
+  const lastHoverLoginRef = useRef(null);
+  const hoverRafRef = useRef(0);
+  const hiCacheRef = useRef(new Map()); // key: `${login}|${min}|${max}` -> array data
+  const rowIndexMapRef = useRef(new Map());
   const [tick, setTick] = useState(0);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
@@ -141,9 +145,6 @@ export default function ChattersChart() {
               const t = (p && p.data && p.data.value && p.data.value[0]) || null;
               const ins = (p && p.data && p.data.ins) || [];
               const outs = (p && p.data && p.data.outs) || [];
-              const inc = ins.length || Math.max(0, (p && p.data && p.data.value && p.data.value[1]) || 0);
-              const outc = outs.length || Math.max(0, Math.abs((p && p.data && p.data.value && p.data.value[1]) || 0));
-              const net = inc - outc;
               const when = (typeof t === 'number' && isFinite(t)) ? dtfFull.format(t) : '';
               const MAXN = 5;
               const fmtList = (arr) => {
@@ -151,20 +152,64 @@ export default function ChattersChart() {
                 const head = arr.slice(0, MAXN);
                 return head.join(', ') + (arr.length > MAXN ? ', …' : '');
               };
-              const insStr = fmtList(ins);
-              const outsStr = fmtList(outs);
-              // If hovering one bar, still show both counts if names available
-              return `${when}<br/>+${inc} in, -${outc} out (net ${net >= 0 ? '+' : ''}${net})<br/>In: ${insStr}<br/>Out: ${outsStr}`;
+              if (p && p.seriesName === 'Arrivals') {
+                const inc = ins.length || Math.max(0, (p.data && p.data.value && p.data.value[1]) || 0);
+                return `${when}<br/>+${inc} in<br/>In: ${fmtList(ins)}`;
+              } else if (p && p.seriesName === 'Departures') {
+                const outc = outs.length || Math.max(0, Math.abs((p.data && p.data.value && p.data.value[1]) || 0));
+                return `${when}<br/>-${outc} out<br/>Out: ${fmtList(outs)}`;
+              }
+              return when;
             } catch {
               return ' '; // ensure tooltip shows
             }
           }
         },
         xAxis: [{ type: 'time', boundaryGap: false, min: minX, max: maxX, axisLabel: { formatter: (val) => dtfTick.format(val) } }],
-        yAxis: [{ type: 'value', min: 'dataMin', max: 'dataMax', name: 'Flow' }],
+        yAxis: [{ type: 'value', min: -10, max: 10, name: 'Flow' }],
         series: [
-          { type: 'bar', name: 'Arrivals', barWidth: 10, barGap: '0%', itemStyle: { color: '#10b981' }, data: [] },
-          { type: 'bar', name: 'Departures', barWidth: 10, barGap: '0%', itemStyle: { color: '#ef4444' }, data: [] },
+          {
+            type: 'custom',
+            name: 'Arrivals',
+            coordinateSystem: 'cartesian2d',
+            clip: true,
+            renderItem: function (params, api) {
+              const t = api.value(0);
+              const v = api.value(1);
+              const halfW = api.value(2) || 0;
+              const y0 = api.coord([t, 0])[1];
+              const y1 = api.coord([t, v])[1];
+              const xL = api.coord([t - halfW, 0])[0];
+              const xR = api.coord([t + halfW, 0])[0];
+              const width = Math.max(2, Math.abs(xR - xL));
+              const left = Math.min(xL, xR);
+              const top = Math.min(y0, y1);
+              const height = Math.abs(y1 - y0);
+              return { type: 'rect', shape: { x: left, y: top, width, height }, style: { fill: '#10b981' } };
+            },
+            data: []
+          },
+          {
+            type: 'custom',
+            name: 'Departures',
+            coordinateSystem: 'cartesian2d',
+            clip: true,
+            renderItem: function (params, api) {
+              const t = api.value(0);
+              const v = api.value(1);
+              const halfW = api.value(2) || 0;
+              const y0 = api.coord([t, 0])[1];
+              const y1 = api.coord([t, v])[1];
+              const xL = api.coord([t - halfW, 0])[0];
+              const xR = api.coord([t + halfW, 0])[0];
+              const width = Math.max(2, Math.abs(xR - xL));
+              const left = Math.min(xL, xR);
+              const top = Math.min(y0, y1);
+              const height = Math.abs(y1 - y0);
+              return { type: 'rect', shape: { x: left, y: top, width, height }, style: { fill: '#ef4444' } };
+            },
+            data: []
+          },
         ],
       });
       if (typeof requestAnimationFrame !== 'undefined') {
@@ -296,6 +341,17 @@ export default function ChattersChart() {
     if (ns !== yStartIdx) setYStartIdx(ns);
     if (ne !== yEndIdx) setYEndIdx(ne);
   }, [visRows.length]);
+
+  // Keep a fast lookup of login -> current row index
+  useEffect(() => {
+    const m = new Map();
+    for (let i = 0; i < visRows.length; i++) {
+      const loginKey = visRows[i];
+      const rowIndex = (visRows.length - 1 - i);
+      m.set(loginKey, rowIndex);
+    }
+    rowIndexMapRef.current = m;
+  }, [visRows]);
 
   useEffect(() => {
     const now = Date.now();
@@ -981,17 +1037,57 @@ export default function ChattersChart() {
   useEffect(() => {
     const inst = flowChartInstance.current;
     if (!inst) return;
-    const inData = (Array.isArray(flowPoints) ? flowPoints : []).map(p => ({ value: [p.t, p.in || 0], ins: p.ins || [], outs: p.outs || [] }));
-    const outData = (Array.isArray(flowPoints) ? flowPoints : []).map(p => ({ value: [p.t, -(p.out || 0)], ins: p.ins || [], outs: p.outs || [] }));
-    inst.setOption({
-      xAxis: [{ type: 'time', boundaryGap: false, min: (inst.getOption().xAxis?.[0]?.min ?? null), max: (inst.getOption().xAxis?.[0]?.max ?? null), axisLabel: { formatter: (val) => dtfTick.format(val) } }],
-      series: [
-        { type: 'bar', name: 'Arrivals', barWidth: 10, barGap: '0%', itemStyle: { color: '#10b981' }, data: inData },
-        { type: 'bar', name: 'Departures', barWidth: 10, barGap: '0%', itemStyle: { color: '#ef4444' }, data: outData },
-      ],
-    }, { notMerge: false });
+    const ptsAll = Array.isArray(flowPoints) ? flowPoints : [];
+    // Determine current visible window from flow chart axes (already synced to main)
+    const opt = inst.getOption();
+    const xa = opt && opt.xAxis && opt.xAxis[0] || {};
+    const wStart = (typeof xa.min === 'number') ? xa.min : -Infinity;
+    const wEnd = (typeof xa.max === 'number') ? xa.max : Infinity;
+    const MARGIN = 60000; // 60s margin to include edge bars
+    const pts = ptsAll.filter(p => typeof p.t === 'number' && p.t >= (wStart - MARGIN) && p.t <= (wEnd + MARGIN));
+    const DEFAULT_PERIOD = 5000;
+    const inData = pts.map((p, i) => {
+      const prev = i > 0 ? pts[i - 1].t : null;
+      const next = i + 1 < pts.length ? pts[i + 1].t : null;
+      const dPrev = (typeof prev === 'number') ? (p.t - prev) : Infinity;
+      const dNext = (typeof next === 'number') ? (next - p.t) : Infinity;
+      const period = Math.min(dPrev, dNext, DEFAULT_PERIOD);
+      const halfW = Math.max(250, Math.floor(0.45 * (isFinite(period) ? period : DEFAULT_PERIOD)));
+      return { value: [p.t, p.in || 0, halfW], ins: p.ins || [], outs: p.outs || [] };
+    });
+    const outData = pts.map((p, i) => {
+      const prev = i > 0 ? pts[i - 1].t : null;
+      const next = i + 1 < pts.length ? pts[i + 1].t : null;
+      const dPrev = (typeof prev === 'number') ? (p.t - prev) : Infinity;
+      const dNext = (typeof next === 'number') ? (next - p.t) : Infinity;
+      const period = Math.min(dPrev, dNext, DEFAULT_PERIOD);
+      const halfW = Math.max(250, Math.floor(0.45 * (isFinite(period) ? period : DEFAULT_PERIOD)));
+      return { value: [p.t, -(p.out || 0), halfW], ins: p.ins || [], outs: p.outs || [] };
+    });
+    // Cache signatures to avoid redundant setOption
+    if (!window.__tm_flow_cache) window.__tm_flow_cache = { inSig: '', outSig: '', yRange: [0,0] };
+    const inSig = `${inData.length}:${inData[0]?.value?.[0] ?? ''}:${inData[inData.length-1]?.value?.[0] ?? ''}:${inData.reduce((a,d)=>a+Math.abs(d.value?.[1]||0),0)}`;
+    const outSig = `${outData.length}:${outData[0]?.value?.[0] ?? ''}:${outData[outData.length-1]?.value?.[0] ?? ''}:${outData.reduce((a,d)=>a+Math.abs(d.value?.[1]||0),0)}`;
+    let maxAbs = 1;
+    for (const d of inData) { const v = Math.abs(d.value?.[1] || 0); if (v > maxAbs) maxAbs = v; }
+    for (const d of outData) { const v = Math.abs(d.value?.[1] || 0); if (v > maxAbs) maxAbs = v; }
+    const yMin = -maxAbs, yMax = maxAbs;
+    const prev = window.__tm_flow_cache;
+    const ySame = prev.yRange[0] === yMin && prev.yRange[1] === yMax;
+    const dataSame = prev.inSig === inSig && prev.outSig === outSig;
+    if (!dataSame || !ySame) {
+      inst.setOption({
+        xAxis: [{ type: 'time', boundaryGap: false, min: (inst.getOption().xAxis?.[0]?.min ?? null), max: (inst.getOption().xAxis?.[0]?.max ?? null), axisLabel: { formatter: (val) => dtfTick.format(val) } }],
+        yAxis: [{ type: 'value', min: yMin, max: yMax, name: 'Flow' }],
+        series: [
+          { name: 'Arrivals', data: inData },
+          { name: 'Departures', data: outData },
+        ],
+      }, { notMerge: false });
+      window.__tm_flow_cache = { inSig, outSig, yRange: [yMin, yMax] };
+    }
     inst.resize();
-  }, [flowPoints, tick]);
+  }, [flowPoints, winStart, winEnd, chartReady]);
 
   // Recompute and render duration distribution for current window
   useEffect(() => {
@@ -1015,25 +1111,8 @@ export default function ChattersChart() {
     const now = nowMarkTs;
     const W = Math.max(1, wEnd - wStart);
     const targetBins = 30;
-    const targetStep = W / targetBins;
-    const steps = [
-      15 * 1000,
-      30 * 1000,
-      60 * 1000,
-      2 * 60 * 1000,
-      5 * 60 * 1000,
-      10 * 60 * 1000,
-      15 * 60 * 1000,
-      30 * 60 * 1000,
-      60 * 60 * 1000,
-      2 * 60 * 60 * 1000,
-      3 * 60 * 60 * 1000,
-      6 * 60 * 60 * 1000,
-      12 * 60 * 60 * 1000
-    ];
-    let binW = steps[steps.length - 1];
-    for (const s of steps) { if (s >= targetStep) { binW = s; break; } }
-    const BIN_COUNT = Math.max(1, Math.ceil(W / binW));
+    const BIN_COUNT = targetBins;
+    const binW = Math.max(1, W / targetBins);
     const bins = new Array(BIN_COUNT).fill(0);
     let totalMs = 0;
     let usersCounted = 0;
@@ -1050,33 +1129,89 @@ export default function ChattersChart() {
         let idx = Math.floor(sum / binW);
         if (idx >= BIN_COUNT) idx = BIN_COUNT - 1;
         bins[idx] += 1;
+        totalMs += sum;
+        usersCounted += 1;
       }
+    }
+    let maxCnt = 0;
+    let modeIdx = -1;
+    if (showDebug) {
+      try { console.debug('[duration-hist] window', { wStart, wEnd, W }); } catch {}
     }
     const data = bins.map((cnt, i) => {
       const startMs = i * binW;
       const endMs = Math.min(W, (i + 1) * binW);
       const center = startMs + (endMs - startMs) / 2;
+      if (cnt > maxCnt) { maxCnt = cnt; modeIdx = i; }
       return { value: [center, cnt], startMs, endMs };
     });
-    const meanMs = usersCounted > 0 ? (totalMs / usersCounted) : null;
+    let modeMs = (modeIdx >= 0) ? data[modeIdx].value[0] : null;
+    if (modeMs != null) {
+      if (modeMs < 0) modeMs = 0;
+      if (modeMs > W) modeMs = W;
+    }
+    // Mean across users in the window
+    let meanMs = usersCounted > 0 ? (totalMs / usersCounted) : null;
+    if (meanMs != null) {
+      if (meanMs < 0) meanMs = 0;
+      if (meanMs > W) meanMs = W;
+    }
+    const axisMaxBase = Math.max(maxCnt, 1);
+    const axisMax = axisMaxBase + 1; // headroom so the label isn't clipped
+    if (showDebug) {
+      try {
+        const px0 = modeMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [modeMs, 0]) : null;
+        const px1 = modeMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [modeMs, axisMax]) : null;
+        const box = distChartRef.current ? { w: distChartRef.current.clientWidth, h: distChartRef.current.clientHeight } : null;
+        console.debug('[duration-hist] bin', { binW, BIN_COUNT, maxCnt, axisMax, modeMs, meanMs, px0, px1, box });
+      } catch {}
+    }
     inst.setOption({
       xAxis: [{ type: 'value', min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val) } }],
-      yAxis: [{ type: 'value', min: 0, max: 'dataMax', name: 'People' }],
-      series: [{
-        type: 'bar',
-        name: 'Duration distribution',
-        barWidth: Math.max(2, Math.floor(800 / BIN_COUNT)),
-        barGap: '0%',
-        data,
-        markLine: meanMs != null ? {
+      yAxis: [{ type: 'value', min: 0, max: axisMax, name: 'People' }],
+      series: [
+        {
+          type: 'bar',
+          name: 'Duration distribution',
+          barWidth: Math.max(2, Math.floor(800 / BIN_COUNT)),
+          barGap: '0%',
+          data
+        },
+        ...(modeMs != null && isFinite(modeMs) ? [{
+          type: 'line',
+          name: 'Mode',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          z: 100,
+          zlevel: 100,
           symbol: 'none',
-          z: 10,
-          zlevel: 10,
+          smooth: false,
+          silent: true,
+          clip: false,
           lineStyle: { color: '#000', width: 3 },
-          label: { show: true, position: 'end', formatter: () => `mean ${fmtShortDur(meanMs)}`, color: '#000', backgroundColor: 'rgba(255,255,255,0.8)', padding: [2,4] },
-          data: [{ xAxis: meanMs }]
-        } : undefined
-      }]
+          data: [
+            { value: [modeMs, 0], label: { show: false } },
+            { value: [modeMs, axisMax], label: { show: true, position: 'insideTop', color: '#000', backgroundColor: 'rgba(255,255,255,0.85)', padding: [2,4], formatter: () => `mode ${fmtShortDur(modeMs)}` } }
+          ]
+        }] : []),
+        ...(meanMs != null && isFinite(meanMs) ? [{
+          type: 'line',
+          name: 'Mean',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          z: 101,
+          zlevel: 101,
+          symbol: 'none',
+          smooth: false,
+          silent: true,
+          clip: false,
+          lineStyle: { color: '#000', width: 2, type: 'dashed' },
+          data: [
+            { value: [meanMs, 0], label: { show: false } },
+            { value: [meanMs, axisMax], label: { show: true, position: 'insideTop', color: '#000', backgroundColor: 'rgba(255,255,255,0.85)', padding: [2,4], formatter: () => `mean ${fmtShortDur(meanMs)}` } }
+          ]
+        }] : [])
+      ]
     }, { notMerge: false });
     inst.resize();
   }, [tick, nowMarkTs, winStart, winEnd, fitMode, chartReady, sessions]);
@@ -1121,103 +1256,155 @@ export default function ChattersChart() {
         }
       }
     }
+    const opt0 = inst.getOption();
+    const hiSeries = (opt0 && Array.isArray(opt0.series)) ? opt0.series.find(s => s && s.id === 'presence-hi') : null;
+    const hasHi = !!hiSeries;
+    const hiExistingData = (hiSeries && Array.isArray(hiSeries.data)) ? hiSeries.data : [];
+    const seriesUpdate = [
+      {
+        id: 'present-overview',
+        type: 'line',
+        name: 'Present count (overview)',
+        step: 'end',
+        symbol: 'none',
+        smooth: false,
+        z: 12,
+        yAxisIndex: 1,
+        lineStyle: { color: '#6b7280', opacity: 1, width: 1.5 },
+        data: (() => {
+          const events = [];
+          for (const arr of segmentsRef.current.values()) {
+            for (const seg of arr) {
+              if (typeof seg.start === 'number') events.push([seg.start, +1]);
+              if (typeof seg.end === 'number') events.push([seg.end, -1]);
+            }
+          }
+          events.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
+          let cur = 0; const out = [];
+          for (const ev of events) { cur += ev[1]; out.push([ev[0], Math.max(0, cur)]); }
+          if (out.length === 0) return out;
+          out.push([now, Math.max(0, cur)]);
+          return out;
+        })(),
+      },
+      {
+        id: 'presence',
+        type: 'custom',
+        name: 'Presence',
+        coordinateSystem: 'cartesian2d',
+        renderItem: function (params, api) {
+          const start = api.value(0);
+          const end = api.value(1);
+          const row = api.value(2);
+          const present = api.value(3) === 1;
+          const clipL = api.value(4) === 1;
+          const clipR = api.value(5) === 1;
+          const x0 = api.coord([start, row])[0];
+          const x1 = api.coord([end, row])[0];
+          const y = api.coord([start, row])[1];
+          const band = api.size([0, 1])[1];
+          const h = Math.max(2, band * 0.6);
+          let left = Math.min(x0, x1);
+          let width = Math.max(1, Math.abs(x1 - x0));
+          if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
+          const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
+          const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
+          const children = [ { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill, opacity } } ];
+          const stubW = 6;
+          const stubH = Math.max(2, h * 0.6);
+          const stubStyle = { fill, opacity: 0.3 };
+          if (clipL) children.push({ type: 'rect', shape: { x: left - stubW - 1, y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
+          if (clipR) children.push({ type: 'rect', shape: { x: left + Math.max(0, width - stubW - 1), y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
+          return { type: 'group', children };
+        },
+        universalTransition: true,
+        clip: true,
+        dimensions: ['start', 'end', 'row', 'present', 'clipL', 'clipR'],
+        encode: { x: [0, 1], y: 2 },
+        markArea: sessAreas.length ? { itemStyle: { color: '#64748b22' }, data: sessAreas } : undefined,
+        markLine: { symbol: 'none', lineStyle: { color: '#94a3b8', width: 1, type: 'solid' }, label: { show: true, formatter: (p) => {
+          try { const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null))); return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : ''; } catch { return ''; }
+        }, color: '#475569', backgroundColor: 'transparent' }, silent: true, data: [{ xAxis: nowMarkTs }] },
+        data: dataArr,
+      }
+    ];
+    if (!hasHi) {
+      seriesUpdate.push({ id: 'presence-hi', type: 'custom', name: 'Presence highlight', coordinateSystem: 'cartesian2d', z: 20, clip: true, renderItem: function (params, api) {
+        const start = api.value(0); const end = api.value(1); const row = api.value(2);
+        const x0 = api.coord([start, row])[0]; const x1 = api.coord([end, row])[0]; const y = api.coord([start, row])[1];
+        const band = api.size([0, 1])[1]; const h = Math.max(3, band * 0.8);
+        let left = Math.min(x0, x1); let width = Math.max(1, Math.abs(x1 - x0)); if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
+        return { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill: '#facc15', opacity: 0.85, stroke: '#111827', lineWidth: 1 } };
+      }, data: hiExistingData });
+    }
     inst.setOption({
       yAxis: [
         { type: 'value', min: -0.5, max: visRows.length - 0.5, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' },
         { type: 'value', min: 0, max: 'dataMax', axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false }, axisLine: { show: false } }
       ],
-      series: [
-        {
-          type: 'line',
-          name: 'Present count (overview)',
-          step: 'end',
-          symbol: 'none',
-          smooth: false,
-          z: 1,
-          yAxisIndex: 1,
-          lineStyle: { color: '#64748b', opacity: 0.25, width: 1 },
-          areaStyle: { color: '#64748b', opacity: 0.08 },
-          data: (() => {
-            // Build step series from all intervals
-            const events = [];
-            for (const arr of segmentsRef.current.values()) {
-              for (const seg of arr) {
-                if (typeof seg.start === 'number') events.push([seg.start, +1]);
-                if (typeof seg.end === 'number') events.push([seg.end, -1]);
-              }
-            }
-            events.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
-            let cur = 0; const out = [];
-            for (const ev of events) { cur += ev[1]; out.push([ev[0], Math.max(0, cur)]); }
-            if (out.length === 0) return out;
-            // ensure now point (matches NOW mark line)
-            out.push([now, Math.max(0, cur)]);
-            return out;
-          })(),
-        },
-        {
-          type: 'custom',
-          name: 'Presence',
-          coordinateSystem: 'cartesian2d',
-          renderItem: function (params, api) {
-            const start = api.value(0);
-            const end = api.value(1);
-            const row = api.value(2);
-            const present = api.value(3) === 1;
-            const clipL = api.value(4) === 1;
-            const clipR = api.value(5) === 1;
-            const x0 = api.coord([start, row])[0];
-            const x1 = api.coord([end, row])[0];
-            const y = api.coord([start, row])[1];
-            const band = api.size([0, 1])[1];
-            const h = Math.max(2, band * 0.6);
-            let left = Math.min(x0, x1);
-            let width = Math.max(1, Math.abs(x1 - x0));
-            // If the bar is effectively zero-width (newly opened presence), render a 1px bar just to the left of NOW
-            if (Math.abs(x1 - x0) < 0.5) {
-              left = x0 - 1;
-              width = 1;
-            }
-            const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
-            const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
-            const children = [
-              { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: api.style({ fill, opacity }) },
-            ];
-            const stubW = 6;
-            const stubH = Math.max(2, h * 0.6);
-            const stubStyle = { fill, opacity: 0.3 };
-            if (clipL) children.push({ type: 'rect', shape: { x: left - stubW - 1, y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
-            if (clipR) children.push({ type: 'rect', shape: { x: left + Math.max(0, width - stubW - 1), y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
-            return { type: 'group', children };
-          },
-          universalTransition: true,
-          clip: true,
-          dimensions: ['start', 'end', 'row', 'present', 'clipL', 'clipR'],
-          encode: { x: [0, 1], y: 2 },
-          markArea: sessAreas.length ? { itemStyle: { color: '#64748b22' }, data: sessAreas } : undefined,
-          markLine: {
-            symbol: 'none',
-            lineStyle: { color: '#94a3b8', width: 1, type: 'solid' },
-            label: {
-              show: true,
-              formatter: (p) => {
-                try {
-                  const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null)));
-                  return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : '';
-                } catch { return ''; }
-              },
-              color: '#475569',
-              backgroundColor: 'transparent',
-            },
-            silent: true,
-            data: [{ xAxis: nowMarkTs }]
-          },
-          data: dataArr,
-        }
-      ]
+      series: seriesUpdate
     }, { notMerge: false });
     inst.resize();
   }, [visRows, tick, sessions, nowMarkTs]);
+
+  // Bind hover handlers once, throttled and cached
+  useEffect(() => {
+    const inst = chartInstance.current;
+    if (!inst || !chartReady) return;
+    const updateHi = (loginKey) => {
+      try {
+        // Fast duplicate check
+        if (lastHoverLoginRef.current === loginKey) return;
+        lastHoverLoginRef.current = loginKey;
+        // Determine window
+        let wStartH = null, wEndH = null;
+        const optH = inst.getOption();
+        const xaH = optH && optH.xAxis && optH.xAxis[0] || {};
+        if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
+        const key = `${loginKey}|${wStartH}|${wEndH}`;
+        let hi = hiCacheRef.current.get(key);
+        if (!hi) {
+          const arr = segmentsRef.current.get(loginKey) || [];
+          const row = rowIndexMapRef.current.get(loginKey);
+          if (!(typeof row === 'number')) return;
+          const nowH = nowMarkTs;
+          hi = [];
+          for (let idx = 0; idx < arr.length; idx++) {
+            const seg = arr[idx];
+            if (typeof seg.start !== 'number') continue;
+            const segEnd = (seg.end == null ? nowH : seg.end);
+            let s0 = seg.start;
+            let e0 = segEnd;
+            if (typeof wStartH === 'number' && s0 < wStartH) s0 = wStartH;
+            if (typeof wEndH === 'number' && e0 > wEndH) e0 = wEndH;
+            if (s0 >= e0) continue;
+            hi.push({ value: [s0, e0, row] });
+          }
+          hiCacheRef.current.set(key, hi);
+        }
+        inst.setOption({ series: [{ id: 'presence-hi', data: hi }] }, { notMerge: false });
+      } catch {}
+    };
+    const onOver = (p) => {
+      const it = Array.isArray(p) ? p[0] : p;
+      if (!it || it.seriesName !== 'Presence') return;
+      const loginKey = it.data && it.data.login;
+      if (!loginKey) return;
+      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = requestAnimationFrame(() => updateHi(loginKey));
+    };
+    const onOut = () => {
+      if (hoverRafRef.current) { cancelAnimationFrame(hoverRafRef.current); hoverRafRef.current = 0; }
+      lastHoverLoginRef.current = null;
+      try { inst.setOption({ series: [{ id: 'presence-hi', data: [] }] }, { notMerge: false }); } catch {}
+    };
+    inst.on('mouseover', onOver);
+    inst.on('globalout', onOut);
+    return () => {
+      inst.off('mouseover', onOver);
+      inst.off('globalout', onOut);
+    };
+  }, [chartReady]);
 
   useEffect(() => {
     if (!login) return;

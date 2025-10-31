@@ -9,6 +9,8 @@ export default function ChattersChart() {
   const chartInstance = useRef(null);
   const flowChartRef = useRef(null);
   const flowChartInstance = useRef(null);
+  const distChartRef = useRef(null);
+  const distChartInstance = useRef(null);
 
   const [timeZone, setTimeZone] = useState('system');
   const [tzInput, setTzInput] = useState('');
@@ -68,6 +70,49 @@ export default function ChattersChart() {
       ];
     }
     setTzList(list);
+  }, []);
+
+  // Initialize duration distribution chart once
+  useEffect(() => {
+    let disposed = false;
+    async function init() {
+      const echarts = await import('echarts');
+      if (disposed) return;
+      const el = distChartRef.current;
+      if (!el) return;
+      const inst = echarts.init(el);
+      distChartInstance.current = inst;
+      const handleResize = () => inst.resize();
+      window.addEventListener('resize', handleResize);
+      const DEFAULT_W = 60 * 60 * 1000;
+      inst.setOption({
+        animation: false,
+        grid: [{ left: 40, right: 16, top: 8, bottom: 30, containLabel: true }],
+        tooltip: {
+          trigger: 'item',
+          formatter: (p) => {
+            try {
+              const d = p && p.data;
+              const start = d && d.startMs;
+              const end = d && d.endMs;
+              const cnt = d && d.value ? d.value[1] : 0;
+              return `${fmtShortDur(start || 0)} – ${fmtShortDur(end || 0)}: ${cnt}`;
+            } catch { return ' '; }
+          }
+        },
+        xAxis: [{ type: 'value', min: 0, max: DEFAULT_W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val) } }],
+        yAxis: [{ type: 'value', min: 0, max: 'dataMax', name: 'People' }],
+        series: [ { type: 'bar', name: 'Duration distribution', barWidth: 10, barGap: '0%', data: [] } ],
+      });
+      if (typeof requestAnimationFrame !== 'undefined') {
+        requestAnimationFrame(() => inst.resize());
+      } else {
+        setTimeout(() => inst.resize(), 0);
+      }
+      return () => { window.removeEventListener('resize', handleResize); inst.dispose(); };
+    }
+    const cleanup = init();
+    return () => { disposed = true; Promise.resolve(cleanup).then(fn => fn && fn()); };
   }, []);
   // Initialize flow chart once
   useEffect(() => {
@@ -436,6 +481,18 @@ export default function ChattersChart() {
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
   const dtfFull = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }), [timeZone]);
   const dtfShort = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }), [timeZone]);
+
+  // Duration label formatter (compact)
+  const fmtShortDur = useMemo(() => (ms) => {
+    if (!(typeof ms === 'number') || !isFinite(ms) || ms < 0) return '0s';
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}h${m > 0 ? ` ${m}m` : ''}`;
+    if (m > 0) return `${m}m${sec > 0 ? ` ${sec}s` : ''}`;
+    return `${sec}s`;
+  }, [timeZone]);
 
   // Offline default window length
   const OFFLINE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
@@ -854,7 +911,7 @@ export default function ChattersChart() {
     inst.resize();
     const flowInst = flowChartInstance.current;
     if (flowInst && needSel) {
-      flowInst.setOption({ xAxis: [{ type: 'time', min: selStart, max: selEnd, axisLabel: { formatter: (val) => dtfTick.format(val) } }] }, { notMerge: false });
+      flowInst.setOption({ xAxis: [{ type: 'time', boundaryGap: false, min: selStart, max: selEnd, axisLabel: { formatter: (val) => dtfTick.format(val) } }] }, { notMerge: false });
       flowInst.resize();
     }
     setTimeout(() => { zoomLockRef.current = false; }, 0);
@@ -927,13 +984,102 @@ export default function ChattersChart() {
     const inData = (Array.isArray(flowPoints) ? flowPoints : []).map(p => ({ value: [p.t, p.in || 0], ins: p.ins || [], outs: p.outs || [] }));
     const outData = (Array.isArray(flowPoints) ? flowPoints : []).map(p => ({ value: [p.t, -(p.out || 0)], ins: p.ins || [], outs: p.outs || [] }));
     inst.setOption({
+      xAxis: [{ type: 'time', boundaryGap: false, min: (inst.getOption().xAxis?.[0]?.min ?? null), max: (inst.getOption().xAxis?.[0]?.max ?? null), axisLabel: { formatter: (val) => dtfTick.format(val) } }],
       series: [
-        { type: 'bar', name: 'Arrivals', barWidth: 14, itemStyle: { color: '#10b981' }, data: inData },
-        { type: 'bar', name: 'Departures', barWidth: 14, itemStyle: { color: '#ef4444' }, data: outData },
+        { type: 'bar', name: 'Arrivals', barWidth: 10, barGap: '0%', itemStyle: { color: '#10b981' }, data: inData },
+        { type: 'bar', name: 'Departures', barWidth: 10, barGap: '0%', itemStyle: { color: '#ef4444' }, data: outData },
       ],
     }, { notMerge: false });
     inst.resize();
   }, [flowPoints, tick]);
+
+  // Recompute and render duration distribution for current window
+  useEffect(() => {
+    const inst = distChartInstance.current;
+    const main = chartInstance.current;
+    if (!inst || !main) return;
+    // Determine current window (prefer selected window over full extent)
+    let wStart = (typeof winStart === 'number') ? winStart : null;
+    let wEnd = (typeof winEnd === 'number') ? winEnd : null;
+    const opt = main.getOption();
+    if (!(typeof wStart === 'number' && typeof wEnd === 'number' && wEnd > wStart)) {
+      const dz0 = opt && opt.dataZoom && opt.dataZoom[0];
+      if (dz0 && typeof dz0.startValue === 'number' && typeof dz0.endValue === 'number') {
+        wStart = dz0.startValue; wEnd = dz0.endValue;
+      } else {
+        const xa = opt && opt.xAxis && opt.xAxis[0] || {};
+        if (typeof xa.min === 'number' && typeof xa.max === 'number') { wStart = xa.min; wEnd = xa.max; }
+      }
+    }
+    if (!(typeof wStart === 'number' && typeof wEnd === 'number' && wEnd > wStart)) return;
+    const now = nowMarkTs;
+    const W = Math.max(1, wEnd - wStart);
+    const targetBins = 30;
+    const targetStep = W / targetBins;
+    const steps = [
+      15 * 1000,
+      30 * 1000,
+      60 * 1000,
+      2 * 60 * 1000,
+      5 * 60 * 1000,
+      10 * 60 * 1000,
+      15 * 60 * 1000,
+      30 * 60 * 1000,
+      60 * 60 * 1000,
+      2 * 60 * 60 * 1000,
+      3 * 60 * 60 * 1000,
+      6 * 60 * 60 * 1000,
+      12 * 60 * 60 * 1000
+    ];
+    let binW = steps[steps.length - 1];
+    for (const s of steps) { if (s >= targetStep) { binW = s; break; } }
+    const BIN_COUNT = Math.max(1, Math.ceil(W / binW));
+    const bins = new Array(BIN_COUNT).fill(0);
+    let totalMs = 0;
+    let usersCounted = 0;
+    // Iterate all users, regardless of search filter
+    for (const arr of segmentsRef.current.values()) {
+      let sum = 0;
+      for (const seg of arr) {
+        if (typeof seg.start !== 'number') continue;
+        const s = Math.max(wStart, seg.start);
+        const e = Math.min(wEnd, seg.end == null ? now : seg.end);
+        if (e > s) sum += (e - s);
+      }
+      if (sum > 0) {
+        let idx = Math.floor(sum / binW);
+        if (idx >= BIN_COUNT) idx = BIN_COUNT - 1;
+        bins[idx] += 1;
+      }
+    }
+    const data = bins.map((cnt, i) => {
+      const startMs = i * binW;
+      const endMs = Math.min(W, (i + 1) * binW);
+      const center = startMs + (endMs - startMs) / 2;
+      return { value: [center, cnt], startMs, endMs };
+    });
+    const meanMs = usersCounted > 0 ? (totalMs / usersCounted) : null;
+    inst.setOption({
+      xAxis: [{ type: 'value', min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val) } }],
+      yAxis: [{ type: 'value', min: 0, max: 'dataMax', name: 'People' }],
+      series: [{
+        type: 'bar',
+        name: 'Duration distribution',
+        barWidth: Math.max(2, Math.floor(800 / BIN_COUNT)),
+        barGap: '0%',
+        data,
+        markLine: meanMs != null ? {
+          symbol: 'none',
+          z: 10,
+          zlevel: 10,
+          lineStyle: { color: '#000', width: 3 },
+          label: { show: true, position: 'end', formatter: () => `mean ${fmtShortDur(meanMs)}`, color: '#000', backgroundColor: 'rgba(255,255,255,0.8)', padding: [2,4] },
+          data: [{ xAxis: meanMs }]
+        } : undefined
+      }]
+    }, { notMerge: false });
+    inst.resize();
+  }, [tick, nowMarkTs, winStart, winEnd, fitMode, chartReady, sessions]);
 
   // Update series data when rows or segments change
   useEffect(() => {
@@ -1182,6 +1328,9 @@ export default function ChattersChart() {
       </Box>
       <Box mt="3" style={{ height: 180 }}>
         <div ref={flowChartRef} style={{ width: '100%', height: '100%' }} />
+      </Box>
+      <Box mt="3" style={{ height: 180 }}>
+        <div ref={distChartRef} style={{ width: '100%', height: '100%' }} />
       </Box>
     </Card>
   );

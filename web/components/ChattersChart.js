@@ -1530,8 +1530,8 @@ export default function ChattersChart() {
     inst.setOption({
       yAxis: [
         { type: 'value', min: -0.5, max: visRows.length - 0.5, gridIndex: 0, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, name: 'People' },
-        { type: 'value', min: 0, max: 'dataMax', gridIndex: 0, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, position: 'right', name: 'Total in room' },
-        { type: 'value', min: (window.__tm_flow_cache?.yRange?.[0] ?? -10), max: (window.__tm_flow_cache?.yRange?.[1] ?? 10), gridIndex: 1, axisLabel: { show: true }, name: 'Flow' }
+        { type: 'value', min: 0, max: 'dataMax', minInterval: 1, gridIndex: 0, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, position: 'right', name: 'Total in room' },
+        { type: 'value', min: (window.__tm_flow_cache?.yRange?.[0] ?? -10), max: (window.__tm_flow_cache?.yRange?.[1] ?? 10), minInterval: 1, gridIndex: 1, axisLabel: { show: true }, name: 'Flow' }
       ],
       series: seriesUpdate
     }, { notMerge: false });

@@ -61,6 +61,13 @@ export default function ChattersChart() {
   const navSnapRef = useRef(null); // active snapshot used during Arrow nav
   const [orderLocked, setOrderLocked] = useState(false);
   const orderLockedRef = useRef(false);
+  // Chat messages capture and dots
+  const messagesRef = useRef(new Map()); // login -> [{ t, id?, txt }]
+  const [messagesTick, setMessagesTick] = useState(0);
+  const [showMsgDots, setShowMsgDots] = useState(true);
+  const [captureMsgs, setCaptureMsgs] = useState(false);
+  const showDebugRef = useRef(false);
+  useEffect(() => { showDebugRef.current = showDebug; }, [showDebug]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -109,11 +116,13 @@ export default function ChattersChart() {
       }
     } finally {
       segmentsRef.current = new Map();
+      messagesRef.current = new Map();
       setRows([]);
       setSessions([]);
       setSelectedSessionId(null);
       setFlowPoints([]);
       setTick(t => t + 1);
+      setMessagesTick(t => t + 1);
     }
   }, [login]);
 
@@ -206,6 +215,7 @@ export default function ChattersChart() {
     let disposed = false;
     async function pollOnce() {
       try {
+        if (showDebugRef.current) console.debug('[chatters] poll start', { at: new Date().toISOString(), broadcasterId, moderatorId: user.id });
         const present = new Map();
         let after = undefined;
         let pages = 0;
@@ -251,6 +261,7 @@ export default function ChattersChart() {
           return a.localeCompare(b);
         });
         if (!disposed) {
+          if (showDebugRef.current) console.debug('[chatters] poll result', { at: new Date().toISOString(), presentCount: present.size, arrivals, departures });
           // Only update rows if the order or length changed
           const prev = rowsRef.current || [];
           let changed = nextRows.length !== prev.length;
@@ -265,7 +276,9 @@ export default function ChattersChart() {
             const base = (existing && existing.users) ? { users: { ...existing.users } } : { users: {} };
             // Overwrite with latest in-memory segments for currently tracked users
             for (const [k, arr] of segmentsRef.current.entries()) {
-              base.users[k] = { name: (namesRef.current.get(k) || (existing && existing.users && existing.users[k] && existing.users[k].name) || k), intervals: arr.map(s => ({ start: s.start, end: s.end == null ? null : s.end })) };
+              const prevU = existing && existing.users && existing.users[k];
+              const prevMsgs = messagesRef.current.get(k) || (prevU && Array.isArray(prevU.messages) ? prevU.messages : []);
+              base.users[k] = { name: (namesRef.current.get(k) || (prevU && prevU.name) || k), intervals: arr.map(s => ({ start: s.start, end: s.end == null ? null : s.end })), messages: prevMsgs };
             }
             saveJSON(presenceAllKeyNorm(name), base);
             setDebugObj(base);
@@ -288,6 +301,7 @@ export default function ChattersChart() {
           setPollInfo({ at: Date.now(), count: present.size, error: '' });
         }
       } catch (e) {
+        if (showDebugRef.current) console.debug('[chatters] poll error', e);
         if (!disposed) setPollInfo({ at: Date.now(), count: 0, error: (e && e.message) ? String(e.message) : 'poll failed' });
       }
     }
@@ -539,6 +553,8 @@ export default function ChattersChart() {
   const fitKeyNorm = (lg) => `tm_chatters_fit_mode_${(lg||'').trim().toLowerCase()}`;
   const windowKeyNorm = (lg) => `tm_chatters_window_${(lg||'').trim().toLowerCase()}`;
   const pinsKeyNorm = (lg) => `tm_chatters_pins_${(lg||'').trim().toLowerCase()}`;
+  const msgsCaptureKey = (lg) => `tm_chatters_capture_msgs_${(lg||'').trim().toLowerCase()}`;
+  const msgDotsKey = (lg) => `tm_chatters_show_msg_dots_${(lg||'').trim().toLowerCase()}`;
 
   const tzResolved = timeZone === 'system' ? undefined : timeZone;
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
@@ -617,7 +633,8 @@ export default function ChattersChart() {
     for (const [k, arr] of segmentsRef.current.entries()) {
       users[k] = {
         name: namesRef.current.get(k) || k,
-        intervals: (Array.isArray(arr) ? arr : []).map(s => ({ start: s.start, end: s.end == null ? null : s.end }))
+        intervals: (Array.isArray(arr) ? arr : []).map(s => ({ start: s.start, end: s.end == null ? null : s.end })),
+        messages: Array.isArray(messagesRef.current.get(k)) ? messagesRef.current.get(k) : []
       };
     }
     const payload = { channel: name, exportedAt: Date.now(), sessions: Array.isArray(sessions) ? sessions : [], selectedSessionId: selectedSessionId || null, users };
@@ -653,6 +670,9 @@ export default function ChattersChart() {
           labels.set(k, u.name || k);
           const src = Array.isArray(u.intervals) ? u.intervals : [];
           segs.set(k, src.map(it => ({ start: it.start, end: it.end == null ? null : it.end })));
+          // load messages
+          const msgs = Array.isArray(u.messages) ? u.messages : [];
+          messagesRef.current.set(k, msgs);
           r.push(k);
         }
         namesRef.current = labels;
@@ -713,6 +733,11 @@ export default function ChattersChart() {
       }
       const selSaved = loadJSON(selectedSessionKey(lg), null);
       if (selSaved) setSelectedSessionId(selSaved);
+      // load capture and dot settings
+      const cap = !!loadJSON(msgsCaptureKey(lg), false);
+      setCaptureMsgs(cap);
+      const dots = loadJSON(msgDotsKey(lg), null);
+      setShowMsgDots(dots == null ? true : !!dots);
       // Migrate any per-session presence keys to continuous key if needed
       let cont = loadJSON(presenceAllKeyNorm(lg), null);
       if (!cont) {
@@ -753,6 +778,21 @@ export default function ChattersChart() {
         }
         saveJSON(presenceAllKeyNorm(lg), merged);
       }
+      // Seed messages from stored presence
+      try {
+        const cur = loadJSON(presenceAllKeyNorm(lg), null);
+        if (cur && cur.users) {
+          const m = new Map();
+          for (const k of Object.keys(cur.users)) {
+            const u = cur.users[k] || {};
+            const msgs = Array.isArray(u.messages) ? u.messages : [];
+            if (msgs.length) m.set(k, msgs);
+          }
+          messagesRef.current = m;
+        } else {
+          messagesRef.current = new Map();
+        }
+      } catch { messagesRef.current = new Map(); }
     }
   }, []);
 
@@ -886,8 +926,30 @@ export default function ChattersChart() {
               const eStr = seg.end == null ? 'now' : dtfFull.format(endTs);
               lines.push(`${i + 1}. ${sStr} → ${eStr} — ${fmtShortDur(durMs)}`);
             }
+            // Determine current main chart window (top xAxis)
+            let wStartH = null, wEndH = null;
+            try {
+              const optH = inst.getOption();
+              const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
+              if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
+            } catch {}
+            // Collect messages in window, oldest first
+            const msgsAll = messagesRef.current.get(loginKey) || [];
+            const msgsWin = [];
+            for (const m of msgsAll) {
+              const t = m && m.t;
+              if (typeof t !== 'number') continue;
+              if (wStartH != null && wEndH != null) { if (t < wStartH || t > wEndH) continue; }
+              msgsWin.push(m);
+            }
+            msgsWin.sort((a,b) => (a.t||0) - (b.t||0));
+            const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (ch) => ch === '&' ? '&amp;' : (ch === '<' ? '&lt;' : '&gt;'));
+            const msgLines = msgsWin.map((m, idx) => `${idx + 1}. ${dtfFull.format(m.t)} — ${esc(m.txt || '')}`);
             const sessionsHeader = `Sessions: ${lines.length}`;
-            return `${uname} (${loginKey || ''})<br/>${sessionsHeader}${lines.length ? '<br/>' + lines.join('<br/>') : ''}`;
+            const messagesHeader = `Messages: ${msgLines.length}`;
+            const sessBlock = lines.length ? ('<br/>' + lines.join('<br/>')) : '';
+            const msgBlock = msgLines.length ? ('<br/>' + msgLines.join('<br/>')) : '';
+            return `${uname} (${loginKey || ''})<br/>${sessionsHeader}${sessBlock}<br/>${messagesHeader}${msgBlock}`;
           } catch {
             return ' ';
           }
@@ -950,6 +1012,34 @@ export default function ChattersChart() {
             data: [],
           }
           ,
+          // Chat message dots overlay (scatter)
+          {
+            type: 'scatter',
+            id: 'chat-dots',
+            name: 'Chat dots',
+            coordinateSystem: 'cartesian2d',
+            xAxisIndex: 0,
+            yAxisIndex: 0,
+            symbol: 'circle',
+            symbolSize: 4,
+            itemStyle: { color: '#ffffff', borderColor: '#111827', borderWidth: 1 },
+            z: 30,
+            clip: true,
+            tooltip: {
+              trigger: 'item',
+              formatter: (p) => {
+                try {
+                  const d = p && p.data;
+                  const t = d && Array.isArray(d.value) ? d.value[0] : null;
+                  const txt = (d && d.text) || '';
+                  const uname = (d && d.login && (namesRef.current.get(d.login) || d.login)) || '';
+                  const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (ch) => ch === '&' ? '&amp;' : (ch === '<' ? '&lt;' : '&gt;'));
+                  return `${uname ? esc(uname) + '<br/>' : ''}${t != null ? dtfFull.format(t) : ''}${txt ? '<br/>' + esc(txt) : ''}`;
+                } catch { return ' '; }
+              }
+            },
+            data: []
+          },
           {
             type: 'custom',
             id: 'flow-arrivals',
@@ -1501,6 +1591,8 @@ export default function ChattersChart() {
         },
         data: dataArr,
       },
+      // Ensure chat dots series exists (data updated elsewhere)
+      { id: 'chat-dots', type: 'scatter', z: 30, clip: true },
     ];
     if (!hasHi) {
       seriesUpdate.push({ id: 'presence-hi', type: 'custom', name: 'Presence highlight', coordinateSystem: 'cartesian2d', z: 20, clip: true, silent: true, tooltip: { show: false }, renderItem: function (params, api) {
@@ -1537,6 +1629,91 @@ export default function ChattersChart() {
     }, { notMerge: false });
     inst.resize();
   }, [visRows, tick, sessions, nowMarkTs]);
+
+  // Compute and render chat message dots for current window
+  useEffect(() => {
+    const inst = chartInstance.current;
+    if (!inst || !chartReady) return;
+    try {
+      // Determine current window from xAxis (prefer selected window)
+      const opt = inst.getOption();
+      let wStart = (typeof winStart === 'number') ? winStart : null;
+      let wEnd = (typeof winEnd === 'number') ? winEnd : null;
+      if (!(typeof wStart === 'number' && typeof wEnd === 'number')) {
+        const xa0 = (opt && Array.isArray(opt.xAxis) && opt.xAxis[0]) || {};
+        if (typeof xa0.min === 'number' && typeof xa0.max === 'number') { wStart = xa0.min; wEnd = xa0.max; }
+      }
+      if (!(typeof wStart === 'number' && typeof wEnd === 'number')) return;
+      const pts = [];
+      for (let i = 0; i < visRows.length; i++) {
+        const loginKey = visRows[i];
+        const rowIndex = (visRows.length - 1 - i);
+        const arr = messagesRef.current.get(loginKey) || [];
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+        // Only messages within window; optionally decimate if needed
+        for (const m of arr) {
+          const t = m && m.t;
+          if (typeof t !== 'number') continue;
+          if (t < wStart || t > wEnd) continue;
+          pts.push({ value: [t, rowIndex], login: loginKey, text: m.txt || '' });
+        }
+      }
+      inst.setOption({ series: [{ id: 'chat-dots', data: showMsgDots ? pts : [] }] }, { notMerge: false });
+      inst.resize();
+    } catch {}
+  }, [showMsgDots, winStart, winEnd, visRows, chartReady, messagesTick]);
+
+  // Chat client: capture messages (anonymous)
+  useEffect(() => {
+    let dispose = null;
+    const name = (login || '').trim();
+    if (!name || !captureMsgs) return;
+    let stopped = false;
+    (async () => {
+      try {
+        const mod = await import('../lib/chatClient');
+        if (stopped) return;
+        if (showDebugRef.current) console.debug('[chat] enabling capture', { channel: name });
+        const client = await mod.createAnonChatClient(name, (payload) => {
+          try {
+            const lg = (payload && payload.login) || '';
+            const txt = (payload && payload.txt) || '';
+            const id = payload && payload.id;
+            const t = (payload && typeof payload.t === 'number') ? payload.t : Date.now();
+            if (!lg) return;
+            if (showDebugRef.current) console.debug('[chat] message', { user: lg, t, id, txt: (txt || '').slice(0, 200) });
+            const arr = messagesRef.current.get(lg) || [];
+            // Simple dedup by last id
+            if (id && arr.length > 0 && arr[arr.length - 1].id === id) return;
+            arr.push({ t, id, txt });
+            // Cap per-user to 2000
+            const MAX_PER_USER = 2000;
+            if (arr.length > MAX_PER_USER) arr.splice(0, arr.length - MAX_PER_USER);
+            messagesRef.current.set(lg, arr);
+            // Persist into presence JSON (preserve intervals)
+            const chan = (login || '').trim();
+            if (chan) {
+              const existing = loadJSON(presenceAllKeyNorm(chan), loadJSON(presenceAllKeyLegacy(chan), { users: {} }));
+              const base = (existing && existing.users) ? { users: { ...existing.users } } : { users: {} };
+              const prevU = base.users[lg] || {};
+              const nameLabel = namesRef.current.get(lg) || prevU.name || lg;
+              const intervals = Array.isArray(prevU.intervals) ? prevU.intervals : (segmentsRef.current.get(lg) || []).map(s => ({ start: s.start, end: s.end == null ? null : s.end }));
+              const msgs = Array.isArray(base.users[lg]?.messages) ? base.users[lg].messages.slice() : [];
+              msgs.push({ t, id, txt });
+              const MAX = 2000; if (msgs.length > MAX) msgs.splice(0, msgs.length - MAX);
+              base.users[lg] = { name: nameLabel, intervals, messages: msgs };
+              saveJSON(presenceAllKeyNorm(chan), base);
+            }
+            setMessagesTick(x => x + 1);
+          } catch {}
+        });
+        if (showDebugRef.current) console.debug('[chat] connecting', { channel: name });
+        await client.connect();
+        dispose = () => { try { if (showDebugRef.current) console.debug('[chat] disconnecting', { channel: name }); client.disconnect(); } catch {} };
+      } catch {}
+    })();
+    return () => { stopped = true; if (dispose) dispose(); };
+  }, [login, captureMsgs]);
 
   // Refresh persistent selection highlight when window or selection changes
   useEffect(() => {
@@ -1876,6 +2053,26 @@ export default function ChattersChart() {
         <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
         <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
         <Button variant="soft" color="red" onClick={clearChatterAndSessions}>Clear chatter + sessions</Button>
+        <Button
+          variant={captureMsgs ? 'solid' : 'soft'}
+          color="indigo"
+          onClick={() => {
+            const next = !captureMsgs;
+            setCaptureMsgs(next);
+            const name = (login||'').trim();
+            if (name) saveJSON(msgsCaptureKey(name), next);
+          }}
+        >Capture chat messages</Button>
+        <Button
+          variant={showMsgDots ? 'solid' : 'soft'}
+          color="gray"
+          onClick={() => {
+            const next = !showMsgDots;
+            setShowMsgDots(next);
+            const name = (login||'').trim();
+            if (name) saveJSON(msgDotsKey(name), next);
+          }}
+        >Show chat dots</Button>
         <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
         <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
         <Button

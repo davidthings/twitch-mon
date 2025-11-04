@@ -23,6 +23,10 @@ This document explains how the web app behaves, which Twitch API endpoints are u
 - Timezone handling
 - Auto-resume, peeks, and navigation behavior
 - Developing locally & deploying to GitHub Pages
+ - Duration distribution (Chatters)
+ - Export/Import (Chatters presence + sessions)
+ - Clearing chatter and sessions (per channel)
+ - Multi-tab storage behavior
 
 ## Architecture & build
 
@@ -87,9 +91,11 @@ Notes:
   - Filter modes: "In chat now" (only present users) and "All users" (present first, then not-present). In "All users", not-present bars are colored orange.
   - Tooltips show start → end and duration for each interval.
   - X-axis is time. OFFLINE default window shows ~last 3 hours; session chips only change the visible window.
+  - A thin "Present count (overview)" line overlays the timeline, always on top, with a subdued gray color.
 - Interaction:
   - Session chips mirror the viewers chart: OFFLINE (when not live), the active LIVE session, and up to 5 recent finished sessions.
   - Selecting a session only sets the time window on the x-axis. Data is not filtered; pre/post-online presence remains visible in the window.
+  - Hovering a user highlights all of their intervals in the time window using a separate, silent overlay layer so tooltips still come from the underlying intervals. The gray session background is non-interactive (no tooltips).
 - Timezone:
   - Uses the same timezone control as charts. "System" uses the browser tz; supports search, aliases (e.g., PST → America/Los_Angeles), and recents.
 - Live updates:
@@ -107,6 +113,15 @@ Notes:
 - Tooltip on bar hover shows timestamp, +in / -out counts, net, and the list of names arriving/leaving.
 - Shares the same x-axis window as the timeline.
 - Fit mode: when enabled, both charts auto-fit to the data extent with padding and remain fitted across updates/reloads.
+
+## Duration distribution (Chatters)
+
+- A histogram of per-user durations within the current visible time window.
+- Fixed to 30 bins spanning the window.
+- Shows two reference markers:
+  - Mode: the center of the most-populated bin (solid black label).
+  - Mean: average duration across users (dashed black label).
+- Uses epoch ms for math; labels use the current timezone setting.
 
 ## Session management
 
@@ -170,6 +185,111 @@ Key naming is scoped by login to keep channels isolated.
   - `tm_chatters_flow_<login-lowercase>` — array of flow points `{ t: epoch_ms, in: number, out: number, ins: string[], outs: string[] }` (arrivals/departures and names) with a rolling cap.
   - `tm_chatters_fit_mode_<login-lowercase>` — boolean; when true, x-axis is kept fitted to data.
 
+## Export/Import (Chatters presence + sessions)
+
+- Toolbar buttons on Chatters:
+  - Export JSON: downloads the current per-channel presence database with sessions and selection.
+  - Import JSON: loads a JSON file into memory and view (replaces current in-memory presence and sessions for that channel).
+- Export schema (example):
+
+```json
+{
+  "channel": "some_channel",
+  "exportedAt": 1730390400000,
+  "sessions": [
+    { "id": "2025-10-30T01:23:45Z", "start": 1730251425000, "end": 1730258625000, "count": 0 }
+  ],
+  "selectedSessionId": "2025-10-30T01:23:45Z",
+  "users": {
+    "alice": {
+      "name": "Alice",
+      "intervals": [
+        { "start": 1730331660000, "end": 1730332260000 },
+        { "start": 1730332860000, "end": null }
+      ]
+    }
+  }
+}
+```
+
+Notes:
+- Timestamps are epoch ms (UTC). `end: null` means currently open.
+- Import replaces in-memory presence and session state for the channel and fits the view to data.
+
+## Clearing chatter and sessions (per channel)
+
+- Toolbar button: Clear chatter + sessions.
+- Removes only chatter-related data for the current channel from localStorage and memory:
+  - Presence (continuous and per-session), flow points, sessions list, selected session, last chatter result snapshot.
+- Leaves other settings intact (auth, selected channel, timezone, pins, fit mode, window).
+
+## Multi-tab storage behavior
+
+- Storage is client-side per browser. With multiple tabs for the same channel:
+  - Writes are effectively last-writer-wins per key.
+  - Presence writes are merged from in-memory state each poll, reducing clobbering but not transactional.
+  - Flow points may occasionally drop/duplicate across tabs if both append concurrently.
+- Options to harden (not enabled by default):
+  - Leader election so only one tab polls/writes; others subscribe via BroadcastChannel or storage events.
+  - Merge on `storage` events before writing.
+
+## Quickstart for analysis
+
+Load an exported presence JSON and do simple aggregations.
+
+### Node.js
+
+```js
+// npm init -y && node analyze.js
+const fs = require('fs');
+
+function load(path) {
+  return JSON.parse(fs.readFileSync(path, 'utf8'));
+}
+
+const data = load('tm_presence_channel_2025-10-31T14-00-00Z.json');
+const now = Date.now();
+
+// Total time per user (ms)
+const totals = Object.fromEntries(
+  Object.entries(data.users).map(([login, u]) => {
+    const sum = (u.intervals || []).reduce((acc, it) => acc + ((it.end ?? now) - it.start), 0);
+    return [login, sum];
+  })
+);
+
+// Top 10 by total time
+const top = Object.entries(totals)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10);
+
+console.log('Top 10 by total time (ms):');
+for (const [login, ms] of top) console.log(login, ms);
+```
+
+### Python
+
+```python
+# python analyze.py
+import json, time
+
+with open('tm_presence_channel_2025-10-31T14-00-00Z.json', 'r') as f:
+    data = json.load(f)
+
+now_ms = int(time.time() * 1000)
+
+# Total time per user (ms)
+totals = {
+    login: sum(((it.get('end') or now_ms) - it['start']) for it in u.get('intervals', []))
+    for login, u in data['users'].items()
+}
+
+top = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
+print('Top 10 by total time (ms):')
+for login, ms in top:
+    print(login, ms)
+```
+
 ## Twitch API usage
 
 The app uses the Helix API via `Authorization: Bearer <token>` and `Client-Id: <client>` headers.
@@ -224,3 +344,15 @@ Notes:
   - Ensure polling (Start) is running and Twitch reports `started_at`.
 - Session not remembered on return:
   - Verify localStorage has `tm_charts_selected_session_<login>`; selecting a chip updates it and it will be restored on re-entry.
+
+
+## Note
+
+- Y axis for total in room
+- more useful leaving
+- sorting by arrival
+- sort by duration in the 
+- dot for each chat
+- what's on in the stream - log chats
+- cursor up and down to select
+- select

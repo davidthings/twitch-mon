@@ -1270,6 +1270,7 @@ export default function ChattersChart() {
     const bins = new Array(BIN_COUNT).fill(0);
     let totalMs = 0;
     let usersCounted = 0;
+    const durations = [];
     // Iterate all users, regardless of search filter
     for (const arr of segmentsRef.current.values()) {
       let sum = 0;
@@ -1285,10 +1286,10 @@ export default function ChattersChart() {
         bins[idx] += 1;
         totalMs += sum;
         usersCounted += 1;
+        durations.push(sum);
       }
     }
     let maxCnt = 0;
-    let modeIdx = -1;
     if (showDebug) {
       try { console.debug('[duration-hist] window', { wStart, wEnd, W }); } catch {}
     }
@@ -1296,13 +1297,18 @@ export default function ChattersChart() {
       const startMs = i * binW;
       const endMs = Math.min(W, (i + 1) * binW);
       const center = startMs + (endMs - startMs) / 2;
-      if (cnt > maxCnt) { maxCnt = cnt; modeIdx = i; }
+      if (cnt > maxCnt) { maxCnt = cnt; }
       return { value: [center, cnt], startMs, endMs };
     });
-    let modeMs = (modeIdx >= 0) ? data[modeIdx].value[0] : null;
-    if (modeMs != null) {
-      if (modeMs < 0) modeMs = 0;
-      if (modeMs > W) modeMs = W;
+    // Median across users in the window (true middle value, not middle bin)
+    let medianMs = null;
+    if (durations.length > 0) {
+      const arr = durations.slice().sort((a,b) => a - b);
+      const n = arr.length;
+      if (n % 2 === 1) medianMs = arr[(n - 1) >> 1];
+      else medianMs = (arr[n/2 - 1] + arr[n/2]) / 2;
+      if (medianMs < 0) medianMs = 0;
+      if (medianMs > W) medianMs = W;
     }
     // Mean across users in the window
     let meanMs = usersCounted > 0 ? (totalMs / usersCounted) : null;
@@ -1314,10 +1320,10 @@ export default function ChattersChart() {
     const axisMax = axisMaxBase + 1; // headroom so the label isn't clipped
     if (showDebug) {
       try {
-        const px0 = modeMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [modeMs, 0]) : null;
-        const px1 = modeMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [modeMs, axisMax]) : null;
+        const px0 = medianMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [medianMs, 0]) : null;
+        const px1 = medianMs != null ? inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [medianMs, axisMax]) : null;
         const box = distChartRef.current ? { w: distChartRef.current.clientWidth, h: distChartRef.current.clientHeight } : null;
-        console.debug('[duration-hist] bin', { binW, BIN_COUNT, maxCnt, axisMax, modeMs, meanMs, px0, px1, box });
+        console.debug('[duration-hist] bin', { binW, BIN_COUNT, maxCnt, axisMax, medianMs, meanMs, px0, px1, box });
       } catch {}
     }
     inst.setOption({
@@ -1331,9 +1337,9 @@ export default function ChattersChart() {
           barGap: '0%',
           data
         },
-        ...(modeMs != null && isFinite(modeMs) ? [{
+        ...(medianMs != null && isFinite(medianMs) ? [{
           type: 'line',
-          name: 'Mode',
+          name: 'Median',
           xAxisIndex: 0,
           yAxisIndex: 0,
           z: 100,
@@ -1344,8 +1350,8 @@ export default function ChattersChart() {
           clip: false,
           lineStyle: { color: '#000', width: 3 },
           data: [
-            { value: [modeMs, 0], label: { show: false } },
-            { value: [modeMs, axisMax], label: { show: true, position: 'insideTop', color: '#000', backgroundColor: 'rgba(255,255,255,0.85)', padding: [2,4], formatter: () => `mode ${fmtShortDur(modeMs)}` } }
+            { value: [medianMs, 0], label: { show: false } },
+            { value: [medianMs, axisMax], label: { show: true, position: 'insideTop', color: '#000', backgroundColor: 'rgba(255,255,255,0.85)', padding: [2,4], formatter: () => `median ${fmtShortDur(medianMs)}` } }
           ]
         }] : []),
         ...(meanMs != null && isFinite(meanMs) ? [{

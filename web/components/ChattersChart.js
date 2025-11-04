@@ -58,6 +58,9 @@ export default function ChattersChart() {
   const selectedLoginRef = useRef(null);
   const visRowsRef = useRef([]);
   const navListRef = useRef([]);
+  const navSnapRef = useRef(null); // active snapshot used during Arrow nav
+  const [orderLocked, setOrderLocked] = useState(false);
+  const orderLockedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -162,8 +165,40 @@ export default function ChattersChart() {
   useEffect(() => { rowsRef.current = rows; }, [rows]);
   useEffect(() => { selectedLoginRef.current = selectedLogin; }, [selectedLogin]);
   useEffect(() => { visRowsRef.current = visRows; }, [visRows]);
-  // When selection is cleared, refresh the nav list snapshot to current presentation order (top-to-bottom)
-  useEffect(() => { if (!selectedLogin) navListRef.current = (visRows || []).slice().reverse(); }, [visRows, selectedLogin]);
+  useEffect(() => { orderLockedRef.current = orderLocked; }, [orderLocked]);
+  // Keep nav base order equal to current visible order (visRows is top-to-bottom)
+  useEffect(() => {
+    navListRef.current = (visRows || []).slice();
+    // Do NOT clear navSnapRef here; keep it stable during active navigation
+  }, [visRows]);
+
+  // When switching views (e.g., Sort By Time), recompute nav order from actual on-screen positions
+  useEffect(() => {
+    if (!chartReady) return;
+    const inst = chartInstance.current;
+    if (!inst) return;
+    try {
+      const list = visRowsRef.current || [];
+      const opt = inst.getOption();
+      const xa0 = Array.isArray(opt?.xAxis) ? opt.xAxis[0] : null;
+      const xMid = (typeof xa0?.min === 'number' && typeof xa0?.max === 'number') ? ((xa0.min + xa0.max) / 2) : Date.now();
+      const items = [];
+      for (let i = 0; i < list.length; i++) {
+        const lg = list[i];
+        const row = rowIndexMapRef.current.get(lg);
+        if (typeof row !== 'number') continue;
+        const px = inst.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [xMid, row]);
+        const py = Array.isArray(px) ? px[1] : Number.POSITIVE_INFINITY;
+        items.push({ login: lg, py });
+      }
+      items.sort((a, b) => a.py - b.py);
+      navListRef.current = items.map(it => it.login);
+    } catch {
+      navListRef.current = (visRowsRef.current || []).slice();
+    }
+    // Clear active snapshot so first Arrow uses the updated order
+    navSnapRef.current = null;
+  }, [sortMode, chartReady]);
 
   useEffect(() => {
     if (!broadcasterId || !user) return;
@@ -361,11 +396,25 @@ export default function ChattersChart() {
       });
       filtered = [...presentStats, ...notPresentStats];
     }
-    // Pinned first
-    const pinnedFirst = [];
-    const rest = [];
-    for (const it of filtered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
-    setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+    // Apply pinned-first only in default mode; keep pure time ordering in 'time' mode
+    if (sortMode === 'time') {
+      if (orderLockedRef.current) {
+        // Keep current on-screen order stable: filter previous order to current set, then append any new items by time order
+        const currentSet = new Set(filtered.map(x => x.login));
+        const prev = visRowsRef.current || [];
+        const kept = prev.filter(lg => currentSet.has(lg));
+        const keptSet = new Set(kept);
+        const rest = filtered.map(x => x.login).filter(lg => !keptSet.has(lg));
+        setVisRows([...kept, ...rest]);
+      } else {
+        setVisRows(filtered.map(x => x.login));
+      }
+    } else {
+      const pinnedFirst = [];
+      const rest = [];
+      for (const it of filtered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+      setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+    }
   }, [rows, filterMode, winStart, winEnd, search, pinnedSet, sortMode]);
 
   useEffect(() => {
@@ -1671,8 +1720,30 @@ export default function ChattersChart() {
       if (!it || it.seriesName !== 'Presence') return;
       const loginKey = it.data && it.data.login;
       if (!loginKey) return;
-      // Snapshot the current presentation order (top-to-bottom) for stable navigation
-      navListRef.current = ((visRowsRef.current || []).slice()).reverse();
+      if (sortMode === 'time') setOrderLocked(true);
+      // Snapshot from actual pixel order (top-to-bottom)
+      try {
+        const inst2 = chartInstance.current;
+        const list = visRowsRef.current || [];
+        const opt = inst2.getOption();
+        const xa0 = Array.isArray(opt?.xAxis) ? opt.xAxis[0] : null;
+        const xMid = (typeof xa0?.min === 'number' && typeof xa0?.max === 'number') ? ((xa0.min + xa0.max) / 2) : Date.now();
+        const items = [];
+        for (let i = 0; i < list.length; i++) {
+          const lg = list[i];
+          const row = rowIndexMapRef.current.get(lg);
+          if (typeof row !== 'number') continue;
+          const px = inst2.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [xMid, row]);
+          const py = Array.isArray(px) ? px[1] : Number.POSITIVE_INFINITY;
+          items.push({ login: lg, py });
+        }
+        items.sort((a, b) => a.py - b.py);
+        navListRef.current = items.map(it => it.login);
+        navSnapRef.current = navListRef.current.slice();
+      } catch {
+        navListRef.current = (visRowsRef.current || []).slice();
+        navSnapRef.current = navListRef.current.slice();
+      }
       setSelectedLogin(loginKey);
       updateSel(loginKey);
     };
@@ -1688,15 +1759,46 @@ export default function ChattersChart() {
         if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
         const ae = document.activeElement;
         if (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.getAttribute && ae.getAttribute('contenteditable') === 'true'))) return;
-        const list = navListRef.current || [];
+        if (sortMode === 'time') setOrderLocked(true);
+        // Use stable snapshot during Arrow navigation; create on first use if missing
+        if (!navSnapRef.current || navSnapRef.current.length === 0) {
+          try {
+            const inst2 = chartInstance.current;
+            const list = visRowsRef.current || [];
+            const opt = inst2.getOption();
+            const xa0 = Array.isArray(opt?.xAxis) ? opt.xAxis[0] : null;
+            const xMid = (typeof xa0?.min === 'number' && typeof xa0?.max === 'number') ? ((xa0.min + xa0.max) / 2) : Date.now();
+            const items = [];
+            for (let i = 0; i < list.length; i++) {
+              const lg = list[i];
+              const row = rowIndexMapRef.current.get(lg);
+              if (typeof row !== 'number') continue;
+              const px = inst2.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [xMid, row]);
+              const py = Array.isArray(px) ? px[1] : Number.POSITIVE_INFINITY;
+              items.push({ login: lg, py });
+            }
+            items.sort((a, b) => a.py - b.py);
+            navListRef.current = items.map(it => it.login);
+            const fallback = (visRowsRef.current || []).slice();
+            navSnapRef.current = (navListRef.current && navListRef.current.length) ? navListRef.current.slice() : fallback;
+          } catch {
+            navListRef.current = (visRowsRef.current || []).slice();
+            navSnapRef.current = navListRef.current.slice();
+          }
+        }
+        let list = navSnapRef.current || [];
+        const visSet = new Set(visRowsRef.current || []);
+        const filtered = list.filter(lg => visSet.has(lg));
+        if (filtered.length !== list.length) {
+          list = filtered;
+          navSnapRef.current = filtered.slice();
+        }
         if (list.length === 0) return;
         const cur = selectedLoginRef.current;
         let idx = cur ? list.indexOf(cur) : -1;
-        if (e.key === 'ArrowUp') {
-          idx = (idx <= 0) ? 0 : (idx - 1);
-        } else if (e.key === 'ArrowDown') {
-          idx = (idx < 0) ? 0 : Math.min(idx + 1, list.length - 1);
-        }
+        if (idx === -1) idx = (e.key === 'ArrowUp') ? (list.length - 1) : 0;
+        if (e.key === 'ArrowUp') idx = Math.max(0, idx - 1);
+        else if (e.key === 'ArrowDown') idx = Math.min(list.length - 1, idx + 1);
         const next = list[idx];
         if (!next) return;
         setSelectedLogin(next);
@@ -1739,6 +1841,10 @@ export default function ChattersChart() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [chartReady, visRows, nowMarkTs]);
+
+  // Unlock order when sort mode changes or selection cleared
+  useEffect(() => { setOrderLocked(false); navSnapRef.current = null; }, [sortMode]);
+  useEffect(() => { if (!selectedLogin) { setOrderLocked(false); navSnapRef.current = null; } }, [selectedLogin]);
 
   useEffect(() => {
     if (!login) return;

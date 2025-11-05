@@ -358,6 +358,9 @@ export default function ChattersChart() {
     }
     for (const loginKey of rows) {
       const arr = segs.get(loginKey) || [];
+      const msgsAll = messagesRef.current.get(loginKey) || [];
+      const hasMsgAny = msgsAll.length > 0;
+      let hasMsgWin = false;
       // Filter out users that don't intersect the window if we have one
       if (typeof wStart === 'number' && typeof wEnd === 'number') {
         let intersectsSeg = false;
@@ -366,14 +369,12 @@ export default function ChattersChart() {
           if (seg.start <= wEnd && e >= wStart) { intersectsSeg = true; break; }
         }
         // Also include users that have any messages within the window
-        let hasMsgInWin = false;
-        const msgs = messagesRef.current.get(loginKey) || [];
-        for (const m of msgs) {
+        for (const m of msgsAll) {
           const t = m && m.t;
           if (typeof t !== 'number') continue;
-          if (t >= wStart && t <= wEnd) { hasMsgInWin = true; break; }
+          if (t >= wStart && t <= wEnd) { hasMsgWin = true; break; }
         }
-        if (!intersectsSeg && !hasMsgInWin) continue;
+        if (!intersectsSeg && !hasMsgWin) continue;
       }
       // Search filter
       const q = (search || '').trim().toLowerCase();
@@ -404,10 +405,19 @@ export default function ChattersChart() {
           }
         }
       }
-      stats.push({ login: loginKey, present, currentDur, lastVisit, windowMs, totalMs });
+      stats.push({ login: loginKey, present, currentDur, lastVisit, windowMs, totalMs, hasMsgAny, hasMsgWin });
     }
     // Apply filtering and sorting
-    let filtered = (filterMode === 'present') ? stats.filter(s => s.present) : stats.slice();
+    let filtered = stats.slice();
+    if (filterMode === 'present') {
+      filtered = filtered.filter(s => s.present);
+    } else if (filterMode === 'messagers') {
+      if (typeof wStart === 'number' && typeof wEnd === 'number') {
+        filtered = filtered.filter(s => !!s.hasMsgWin);
+      } else {
+        filtered = filtered.filter(s => !!s.hasMsgAny);
+      }
+    }
     if (sortMode === 'time') {
       // Total time in room (all history), highest on top
       filtered.sort((a, b) => {
@@ -737,11 +747,9 @@ export default function ChattersChart() {
       }
       const selSaved = loadJSON(selectedSessionKey(lg), null);
       if (selSaved) setSelectedSessionId(selSaved);
-      // load capture and dot settings
-      const cap = !!loadJSON(msgsCaptureKey(lg), false);
-      setCaptureMsgs(cap);
-      const dots = loadJSON(msgDotsKey(lg), null);
-      setShowMsgDots(dots == null ? true : !!dots);
+      // Assume capture and dots are ON by default
+      setCaptureMsgs(true); try { saveJSON(msgsCaptureKey(lg), true); } catch {}
+      setShowMsgDots(true); try { saveJSON(msgDotsKey(lg), true); } catch {}
       // Migrate any per-session presence keys to continuous key if needed
       let cont = loadJSON(presenceAllKeyNorm(lg), null);
       if (!cont) {
@@ -997,8 +1005,8 @@ export default function ChattersChart() {
               const h = Math.max(2, band * 0.6);
               const left = Math.min(x0, x1);
               const width = Math.max(1, Math.abs(x1 - x0));
-              const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
-              const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
+              const fill = present ? '#4f46e5' : '#f59e0b';
+              const opacity = present ? 1 : 0.75;
               return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: { fill, opacity } };
             },
             universalTransition: true,
@@ -1611,8 +1619,8 @@ export default function ChattersChart() {
           let left = Math.min(x0, x1);
           let width = Math.max(1, Math.abs(x1 - x0));
           if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
-          const fill = (filterMode === 'all' && !present) ? '#f59e0b' : '#4f46e5';
-          const opacity = (filterMode === 'all' && !present) ? 0.75 : 1;
+          const fill = present ? '#4f46e5' : '#f59e0b';
+          const opacity = present ? 1 : 0.75;
           const children = [ { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill, opacity } } ];
           const stubW = 6;
           const stubH = Math.max(2, h * 0.6);
@@ -2153,33 +2161,16 @@ export default function ChattersChart() {
         <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
         <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
         <Button variant="soft" color="red" onClick={clearChatterAndSessions}>Clear chatter + sessions</Button>
+        {/* Capture chat messages and Show chat dots controls removed; always on */}
         <Button
-          variant={captureMsgs ? 'solid' : 'soft'}
-          color="indigo"
-          onClick={() => {
-            const next = !captureMsgs;
-            setCaptureMsgs(next);
-            const name = (login||'').trim();
-            if (name) saveJSON(msgsCaptureKey(name), next);
-          }}
-        >Capture chat messages</Button>
+          variant="soft"
+          onClick={() => setFilterMode(m => (m === 'all' ? 'present' : (m === 'present' ? 'messagers' : 'all')))}
+        >{`Filter: ${filterMode === 'all' ? 'all' : (filterMode === 'present' ? 'in chat now' : 'messagers')}`}</Button>
         <Button
-          variant={showMsgDots ? 'solid' : 'soft'}
-          color="gray"
-          onClick={() => {
-            const next = !showMsgDots;
-            setShowMsgDots(next);
-            const name = (login||'').trim();
-            if (name) saveJSON(msgDotsKey(name), next);
-          }}
-        >Show chat dots</Button>
-        <Button variant={filterMode==='present' ? 'solid' : 'soft'} onClick={() => setFilterMode('present')}>In chat now</Button>
-        <Button variant={filterMode==='all' ? 'solid' : 'soft'} onClick={() => setFilterMode('all')}>All users</Button>
-        <Button
-          variant={sortMode==='time' ? 'solid' : 'soft'}
+          variant="soft"
           color="indigo"
           onClick={() => setSortMode(m => m === 'time' ? 'default' : 'time')}
-        >Sort by time</Button>
+        >{`Sort: ${sortMode === 'time' ? 'time in room' : 'ins/outs'}`}</Button>
         <Button
           variant={fitMode ? 'solid' : 'soft'}
           color="gray"
@@ -2190,7 +2181,7 @@ export default function ChattersChart() {
             if (name) saveJSON(fitKeyNorm(name), next);
             if (next) { setPinRight(true); fitToData(); }
           }}
-        >Fit mode</Button>
+        >{`Fit: ${fitMode ? 'All' : 'Partial'}`}</Button>
         <Button variant={pinMode ? 'solid' : 'soft'} color="indigo" onClick={() => setPinMode(v => !v)}>Pin mode</Button>
         <TextField.Root value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users" />
       </Flex>

@@ -9,6 +9,7 @@ export default function ChattersChart() {
   const chartInstance = useRef(null);
   const distChartRef = useRef(null);
   const distChartInstance = useRef(null);
+  const detailsRef = useRef(null);
 
   const [timeZone, setTimeZone] = useState('system');
   const [tzInput, setTzInput] = useState('');
@@ -56,6 +57,8 @@ export default function ChattersChart() {
   const [sortMode, setSortMode] = useState('default'); // 'default' | 'time'
   const [selectedLogin, setSelectedLogin] = useState(null);
   const selectedLoginRef = useRef(null);
+  const [selectedLogins, setSelectedLogins] = useState([]);
+  const selectedLoginsRef = useRef([]);
   const visRowsRef = useRef([]);
   const navListRef = useRef([]);
   const navSnapRef = useRef(null); // active snapshot used during Arrow nav
@@ -173,6 +176,7 @@ export default function ChattersChart() {
   // Keep a live reference to the current rows
   useEffect(() => { rowsRef.current = rows; }, [rows]);
   useEffect(() => { selectedLoginRef.current = selectedLogin; }, [selectedLogin]);
+  useEffect(() => { selectedLoginsRef.current = Array.isArray(selectedLogins) ? selectedLogins : []; }, [selectedLogins]);
   useEffect(() => { visRowsRef.current = visRows; }, [visRows]);
   useEffect(() => { orderLockedRef.current = orderLocked; }, [orderLocked]);
   // Keep nav base order equal to current visible order (visRows is top-to-bottom)
@@ -356,12 +360,20 @@ export default function ChattersChart() {
       const arr = segs.get(loginKey) || [];
       // Filter out users that don't intersect the window if we have one
       if (typeof wStart === 'number' && typeof wEnd === 'number') {
-        let intersects = false;
+        let intersectsSeg = false;
         for (const seg of arr) {
           const e = seg.end == null ? now : seg.end;
-          if (seg.start <= wEnd && e >= wStart) { intersects = true; break; }
+          if (seg.start <= wEnd && e >= wStart) { intersectsSeg = true; break; }
         }
-        if (!intersects) continue;
+        // Also include users that have any messages within the window
+        let hasMsgInWin = false;
+        const msgs = messagesRef.current.get(loginKey) || [];
+        for (const m of msgs) {
+          const t = m && m.t;
+          if (typeof t !== 'number') continue;
+          if (t >= wStart && t <= wEnd) { hasMsgInWin = true; break; }
+        }
+        if (!intersectsSeg && !hasMsgInWin) continue;
       }
       // Search filter
       const q = (search || '').trim().toLowerCase();
@@ -376,60 +388,52 @@ export default function ChattersChart() {
       let lastVisit = -Infinity;
       if (arr.length > 0) {
         const l = arr[arr.length - 1];
-        lastVisit = (l.end == null) ? l.start : l.end;
+        lastVisit = (l && l.end == null) ? l.start : (l ? l.end : -Infinity);
       }
-      // Total time in current main chart window
       let windowMs = 0;
-      if (typeof wStart === 'number' && typeof wEnd === 'number') {
+      let totalMs = 0;
+      if (arr.length > 0) {
         for (const seg of arr) {
           if (typeof seg.start !== 'number') continue;
-          const s = Math.max(wStart, seg.start);
-          const e = Math.min(wEnd, seg.end == null ? now : seg.end);
-          if (e > s) windowMs += (e - s);
+          const eAll = seg.end == null ? now : seg.end;
+          if (eAll > seg.start) totalMs += (eAll - seg.start);
+          if (typeof wStart === 'number' && typeof wEnd === 'number') {
+            const s = Math.max(wStart, seg.start);
+            const e = Math.min(wEnd, seg.end == null ? now : seg.end);
+            if (e > s) windowMs += (e - s);
+          }
         }
       }
-      stats.push({ login: loginKey, present, currentDur, lastVisit, windowMs });
+      stats.push({ login: loginKey, present, currentDur, lastVisit, windowMs, totalMs });
     }
     // Apply filtering and sorting
     let filtered = (filterMode === 'present') ? stats.filter(s => s.present) : stats.slice();
     if (sortMode === 'time') {
+      // Total time in room (all history), highest on top
       filtered.sort((a, b) => {
-        if (b.windowMs !== a.windowMs) return b.windowMs - a.windowMs; // longest in window first
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit; // latest visit first
+        if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
         return a.login.localeCompare(b.login);
       });
+      setVisRows(filtered.map(x => x.login));
     } else {
+      // Order entered/exited: present first by longest current duration; then not-present by recency
       const presentStats = filtered.filter(s => s.present).sort((a, b) => {
-        if (b.currentDur !== a.currentDur) return b.currentDur - a.currentDur; // longest duration first
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;     // latest visit first
+        if (b.currentDur !== a.currentDur) return b.currentDur - a.currentDur;
+        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
         return a.login.localeCompare(b.login);
       });
       const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;     // latest visit first
+        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
         return a.login.localeCompare(b.login);
       });
-      filtered = [...presentStats, ...notPresentStats];
-    }
-    // Apply pinned-first only in default mode; keep pure time ordering in 'time' mode
-    if (sortMode === 'time') {
-      if (orderLockedRef.current) {
-        // Keep current on-screen order stable: filter previous order to current set, then append any new items by time order
-        const currentSet = new Set(filtered.map(x => x.login));
-        const prev = visRowsRef.current || [];
-        const kept = prev.filter(lg => currentSet.has(lg));
-        const keptSet = new Set(kept);
-        const rest = filtered.map(x => x.login).filter(lg => !keptSet.has(lg));
-        setVisRows([...kept, ...rest]);
-      } else {
-        setVisRows(filtered.map(x => x.login));
-      }
-    } else {
+      const ordered = [...presentStats, ...notPresentStats];
       const pinnedFirst = [];
       const rest = [];
-      for (const it of filtered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+      for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
       setVisRows([...pinnedFirst, ...rest].map(x => x.login));
     }
-  }, [rows, filterMode, winStart, winEnd, search, pinnedSet, sortMode]);
+  }, [rows, filterMode, winStart, winEnd, search, pinnedSet, sortMode, messagesTick]);
 
   useEffect(() => {
     const name = (login||'').trim();
@@ -906,7 +910,7 @@ export default function ChattersChart() {
           }
           return String(val ?? '');
         } } },
-        tooltip: { trigger: 'item', formatter: (params) => {
+        tooltip: { trigger: 'item', confine: true, extraCssText: 'max-width: 520px; white-space: normal; line-height: 1.2; word-break: break-word; overflow-wrap: anywhere;', formatter: (params) => {
           try {
             const p = Array.isArray(params) ? params[0] : params;
             if (!p || p.seriesId !== 'presence') return ' ';
@@ -916,16 +920,6 @@ export default function ChattersChart() {
             const uname = (namesRef.current.get(loginKey)) || loginKey || '';
             const arr = segmentsRef.current.get(loginKey) || [];
             const now = Date.now();
-            const lines = [];
-            for (let i = 0; i < arr.length; i++) {
-              const seg = arr[i];
-              if (typeof seg?.start !== 'number') continue;
-              const endTs = (seg.end == null ? now : seg.end);
-              const durMs = Math.max(0, endTs - seg.start);
-              const sStr = dtfFull.format(seg.start);
-              const eStr = seg.end == null ? 'now' : dtfFull.format(endTs);
-              lines.push(`${i + 1}. ${sStr} → ${eStr} — ${fmtShortDur(durMs)}`);
-            }
             // Determine current main chart window (top xAxis)
             let wStartH = null, wEndH = null;
             try {
@@ -933,23 +927,25 @@ export default function ChattersChart() {
               const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
               if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
             } catch {}
-            // Collect messages in window, oldest first
-            const msgsAll = messagesRef.current.get(loginKey) || [];
-            const msgsWin = [];
-            for (const m of msgsAll) {
-              const t = m && m.t;
-              if (typeof t !== 'number') continue;
-              if (wStartH != null && wEndH != null) { if (t < wStartH || t > wEndH) continue; }
-              msgsWin.push(m);
+            // Compute total time in window
+            let windowMs = 0;
+            if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+              for (const seg of arr) {
+                if (typeof seg?.start !== 'number') continue;
+                const s = Math.max(wStartH, seg.start);
+                const e = Math.min(wEndH, seg.end == null ? now : seg.end);
+                if (e > s) windowMs += (e - s);
+              }
             }
-            msgsWin.sort((a,b) => (a.t||0) - (b.t||0));
-            const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (ch) => ch === '&' ? '&amp;' : (ch === '<' ? '&lt;' : '&gt;'));
-            const msgLines = msgsWin.map((m, idx) => `${idx + 1}. ${dtfFull.format(m.t)} — ${esc(m.txt || '')}`);
-            const sessionsHeader = `Sessions: ${lines.length}`;
-            const messagesHeader = `Messages: ${msgLines.length}`;
-            const sessBlock = lines.length ? ('<br/>' + lines.join('<br/>')) : '';
-            const msgBlock = msgLines.length ? ('<br/>' + msgLines.join('<br/>')) : '';
-            return `${uname} (${loginKey || ''})<br/>${sessionsHeader}${sessBlock}<br/>${messagesHeader}${msgBlock}`;
+            // Count messages in window
+            const msgsAll = messagesRef.current.get(loginKey) || [];
+            let msgCount = 0;
+            if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+              for (const m of msgsAll) { const t = m && m.t; if (typeof t === 'number' && t >= wStartH && t <= wEndH) msgCount++; }
+            } else {
+              msgCount = msgsAll.length;
+            }
+            return `${uname} (${loginKey || ''})<br/>Time in window: ${fmtShortDur(windowMs)}<br/>Messages: ${msgCount}`;
           } catch {
             return ' ';
           }
@@ -1027,6 +1023,8 @@ export default function ChattersChart() {
             clip: true,
             tooltip: {
               trigger: 'item',
+              confine: true,
+              extraCssText: 'max-width: 520px; white-space: normal; line-height: 1.2; word-break: break-word; overflow-wrap: anywhere;',
               formatter: (p) => {
                 try {
                   const d = p && p.data;
@@ -1037,6 +1035,62 @@ export default function ChattersChart() {
                   return `${uname ? esc(uname) + '<br/>' : ''}${t != null ? dtfFull.format(t) : ''}${txt ? '<br/>' + esc(txt) : ''}`;
                 } catch { return ' '; }
               }
+            },
+            data: []
+          },
+          // Presence hover highlight (empty initially; filled on hover)
+          {
+            type: 'custom',
+            id: 'presence-hi',
+            name: 'Presence highlight',
+            coordinateSystem: 'cartesian2d',
+            xAxisIndex: 0,
+            yAxisIndex: 0,
+            z: 20,
+            clip: true,
+            silent: true,
+            tooltip: { show: false },
+            renderItem: function (params, api) {
+              const start = api.value(0);
+              const end = api.value(1);
+              const row = api.value(2);
+              const x0 = api.coord([start, row])[0];
+              const x1 = api.coord([end, row])[0];
+              const y = api.coord([start, row])[1];
+              const band = api.size([0, 1])[1];
+              const h = Math.max(3, band * 0.8);
+              let left = Math.min(x0, x1);
+              let width = Math.max(1, Math.abs(x1 - x0));
+              if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
+              return { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill: '#facc15', opacity: 0.85, stroke: '#111827', lineWidth: 1 } };
+            },
+            data: []
+          },
+          // Presence persistent selection highlight (empty initially; filled on select)
+          {
+            type: 'custom',
+            id: 'presence-sel',
+            name: 'Presence selected',
+            coordinateSystem: 'cartesian2d',
+            xAxisIndex: 0,
+            yAxisIndex: 0,
+            z: 21,
+            clip: true,
+            silent: true,
+            tooltip: { show: false },
+            renderItem: function (params, api) {
+              const start = api.value(0);
+              const end = api.value(1);
+              const row = api.value(2);
+              const x0 = api.coord([start, row])[0];
+              const x1 = api.coord([end, row])[0];
+              const y = api.coord([start, row])[1];
+              const band = api.size([0, 1])[1];
+              const h = Math.max(3, band * 0.8);
+              let left = Math.min(x0, x1);
+              let width = Math.max(1, Math.abs(x1 - x0));
+              if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
+              return { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill: '#0ea5e9', opacity: 0.95, stroke: '#0c4a6e', lineWidth: 1 } };
             },
             data: []
           },
@@ -1682,6 +1736,10 @@ export default function ChattersChart() {
             const t = (payload && typeof payload.t === 'number') ? payload.t : Date.now();
             if (!lg) return;
             if (showDebugRef.current) console.debug('[chat] message', { user: lg, t, id, txt: (txt || '').slice(0, 200) });
+            // Seed display name if missing
+            if (!namesRef.current.has(lg)) namesRef.current.set(lg, lg);
+            // Ensure the user is present in rows immediately so dots can render
+            setRows(prev => (Array.isArray(prev) && prev.includes(lg)) ? prev : ([...(Array.isArray(prev) ? prev : []), lg]));
             const arr = messagesRef.current.get(lg) || [];
             // Simple dedup by last id
             if (id && arr.length > 0 && arr[arr.length - 1].id === id) return;
@@ -1715,47 +1773,48 @@ export default function ChattersChart() {
     return () => { stopped = true; if (dispose) dispose(); };
   }, [login, captureMsgs]);
 
-  // Refresh persistent selection highlight when window or selection changes
+  // Persistent selection highlight (multi-select): draw selected users' segments in a dedicated series
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst || !chartReady) return;
-    const loginKey = selectedLoginRef.current;
-    if (!loginKey) {
-      try { inst.setOption({ series: [{ id: 'presence-sel', data: [] }] }, { notMerge: false }); } catch {}
-      return;
-    }
+    const selArr = (Array.isArray(selectedLogins) ? selectedLogins : []).filter(Boolean);
+    if (selArr.length === 0) { try { inst.setOption({ series: [{ id: 'presence-sel', data: [] }] }, { notMerge: false }); } catch {}; return; }
     try {
       // Determine current window from xAxis
       let wStartH = null, wEndH = null;
       const optH = inst.getOption();
       const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
       if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
-      const key = `${loginKey}|${wStartH}|${wEndH}`;
-      let hi = hiCacheRef.current.get(key);
-      if (!hi) {
-        const arr = segmentsRef.current.get(loginKey) || [];
-        const row = rowIndexMapRef.current.get(loginKey);
-        if (!(typeof row === 'number')) { hi = []; }
-        else {
-          const nowH = nowMarkTs;
-          hi = [];
-          for (let idx = 0; idx < arr.length; idx++) {
-            const seg = arr[idx];
-            if (typeof seg.start !== 'number') continue;
-            const segEnd = (seg.end == null ? nowH : seg.end);
-            let s0 = seg.start;
-            let e0 = segEnd;
-            if (typeof wStartH === 'number' && s0 < wStartH) s0 = wStartH;
-            if (typeof wEndH === 'number' && e0 > wEndH) e0 = wEndH;
-            if (s0 >= e0) continue;
-            hi.push({ value: [s0, e0, row] });
+      let all = [];
+      const nowH = nowMarkTs;
+      for (const loginKey of selArr) {
+        const key = `${loginKey}|${wStartH}|${wEndH}`;
+        let hi = hiCacheRef.current.get(key);
+        if (!hi) {
+          const arr = segmentsRef.current.get(loginKey) || [];
+          const row = rowIndexMapRef.current.get(loginKey);
+          if (!(typeof row === 'number')) { hi = []; }
+          else {
+            hi = [];
+            for (let idx2 = 0; idx2 < arr.length; idx2++) {
+              const seg = arr[idx2];
+              if (typeof seg.start !== 'number') continue;
+              const segEnd = (seg.end == null ? nowH : seg.end);
+              let s0 = seg.start;
+              let e0 = segEnd;
+              if (typeof wStartH === 'number' && s0 < wStartH) s0 = wStartH;
+              if (typeof wEndH === 'number' && e0 > wEndH) e0 = wEndH;
+              if (s0 >= e0) continue;
+              hi.push({ value: [s0, e0, row] });
+            }
           }
+          hiCacheRef.current.set(key, hi);
         }
-        hiCacheRef.current.set(key, hi);
+        if (Array.isArray(hi) && hi.length) all.push(...hi);
       }
-      inst.setOption({ series: [{ id: 'presence-sel', data: hi }] }, { notMerge: false });
+      inst.setOption({ series: [{ id: 'presence-sel', data: all }] }, { notMerge: false });
     } catch {}
-  }, [selectedLogin, winStart, winEnd, nowMarkTs, chartReady]);
+  }, [selectedLogins, winStart, winEnd, nowMarkTs, chartReady]);
 
   // Keep tooltip in sync with selected user (show most recent visible segment)
   useEffect(() => {
@@ -1899,13 +1958,12 @@ export default function ChattersChart() {
       } catch {}
     };
     const onClick = (p) => {
-      const it = Array.isArray(p) ? p[0] : p;
-      if (!it || it.seriesName !== 'Presence') return;
-      const loginKey = it.data && it.data.login;
-      if (!loginKey) return;
-      if (sortMode === 'time') setOrderLocked(true);
-      // Snapshot from actual pixel order (top-to-bottom)
       try {
+        if (pinMode) return;
+        const d = p && p.data;
+        const loginKey = d && d.login;
+        if (!loginKey) return;
+        // Update nav order snapshot based on actual on-screen y positions at current x midpoint
         const inst2 = chartInstance.current;
         const list = visRowsRef.current || [];
         const opt = inst2.getOption();
@@ -1923,18 +1981,26 @@ export default function ChattersChart() {
         items.sort((a, b) => a.py - b.py);
         navListRef.current = items.map(it => it.login);
         navSnapRef.current = navListRef.current.slice();
-      } catch {
-        navListRef.current = (visRowsRef.current || []).slice();
-        navSnapRef.current = navListRef.current.slice();
-      }
-      setSelectedLogin(loginKey);
-      updateSel(loginKey);
+        const multi = !!(p && p.event && ((p.event.event && p.event.event.shiftKey) || p.event.shiftKey));
+        if (multi) {
+          setSelectedLogins(prev => {
+            const cur = Array.isArray(prev) ? prev.slice() : [];
+            const idx = cur.indexOf(loginKey);
+            if (idx === -1) cur.push(loginKey); else cur.splice(idx, 1);
+            return cur;
+          });
+        } else {
+          setSelectedLogins([loginKey]);
+        }
+        setSelectedLogin(loginKey);
+        updateSel(loginKey);
+      } catch {}
     };
     inst.on('click', onClick);
     return () => { inst.off('click', onClick); };
   }, [chartReady, nowMarkTs]);
 
-  // Keyboard navigation (ArrowUp/ArrowDown) through visible users
+  // Keyboard navigation (ArrowUp/ArrowDown) through visible users (supports Shift for multi-select)
   useEffect(() => {
     if (!chartReady) return;
     const handler = (e) => {
@@ -1942,7 +2008,7 @@ export default function ChattersChart() {
         if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
         const ae = document.activeElement;
         if (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.getAttribute && ae.getAttribute('contenteditable') === 'true'))) return;
-        if (sortMode === 'time') setOrderLocked(true);
+        // No order locking needed; sort is stable
         // Use stable snapshot during Arrow navigation; create on first use if missing
         if (!navSnapRef.current || navSnapRef.current.length === 0) {
           try {
@@ -1984,39 +2050,54 @@ export default function ChattersChart() {
         else if (e.key === 'ArrowDown') idx = Math.min(list.length - 1, idx + 1);
         const next = list[idx];
         if (!next) return;
+        const multi = !!e.shiftKey;
+        if (multi) {
+          setSelectedLogins(prev => {
+            const cur = Array.isArray(prev) ? prev.slice() : [];
+            if (!cur.includes(next)) cur.push(next);
+            return cur;
+          });
+        } else {
+          setSelectedLogins([next]);
+        }
         setSelectedLogin(next);
-        // Update selection series
+        // Update selection series (multi)
         const inst = chartInstance.current;
         if (!inst) return;
-        // mimic updateSel from above
+        // mimic updateSel from above (multi)
         let wStartH = null, wEndH = null;
         const optH = inst.getOption();
         const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
         if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
-        const key = `${next}|${wStartH}|${wEndH}`;
-        let hi = hiCacheRef.current.get(key);
-        if (!hi) {
-          const arr = segmentsRef.current.get(next) || [];
-          const row = rowIndexMapRef.current.get(next);
-          if (!(typeof row === 'number')) { hi = []; }
-          else {
-            const nowH = nowMarkTs;
-            hi = [];
-            for (let idx2 = 0; idx2 < arr.length; idx2++) {
-              const seg = arr[idx2];
-              if (typeof seg.start !== 'number') continue;
-              const segEnd = (seg.end == null ? nowH : seg.end);
-              let s0 = seg.start;
-              let e0 = segEnd;
-              if (typeof wStartH === 'number' && s0 < wStartH) s0 = wStartH;
-              if (typeof wEndH === 'number' && e0 > wEndH) e0 = wEndH;
-              if (s0 >= e0) continue;
-              hi.push({ value: [s0, e0, row] });
+        const picks = multi ? (selectedLoginsRef.current || []).concat(next) : [next];
+        const set = new Set(picks);
+        const nowH = nowMarkTs;
+        let all = [];
+        for (const lg of set) {
+          const key = `${lg}|${wStartH}|${wEndH}`;
+          let hi = hiCacheRef.current.get(key);
+          if (!hi) {
+            const arr = segmentsRef.current.get(lg) || [];
+            const row = rowIndexMapRef.current.get(lg);
+            if (!(typeof row === 'number')) { hi = []; }
+            else {
+              hi = [];
+              for (let idx2 = 0; idx2 < arr.length; idx2++) {
+                const seg = arr[idx2];
+                if (typeof seg.start !== 'number') continue;
+                const segEnd = (seg.end == null ? nowH : seg.end);
+                let s0 = seg.start; let e0 = segEnd;
+                if (typeof wStartH === 'number' && s0 < wStartH) s0 = wStartH;
+                if (typeof wEndH === 'number' && e0 > wEndH) e0 = wEndH;
+                if (s0 >= e0) continue;
+                hi.push({ value: [s0, e0, row] });
+              }
             }
+            hiCacheRef.current.set(key, hi);
           }
-          hiCacheRef.current.set(key, hi);
+          if (Array.isArray(hi) && hi.length) all.push(...hi);
         }
-        inst.setOption({ series: [{ id: 'presence-sel', data: hi }] }, { notMerge: false });
+        inst.setOption({ series: [{ id: 'presence-sel', data: all }] }, { notMerge: false });
         e.preventDefault();
         e.stopPropagation();
       } catch {}
@@ -2025,9 +2106,28 @@ export default function ChattersChart() {
     return () => window.removeEventListener('keydown', handler);
   }, [chartReady, visRows, nowMarkTs]);
 
-  // Unlock order when sort mode changes or selection cleared
-  useEffect(() => { setOrderLocked(false); navSnapRef.current = null; }, [sortMode]);
-  useEffect(() => { if (!selectedLogin) { setOrderLocked(false); navSnapRef.current = null; } }, [selectedLogin]);
+  // Clear snapshot when sort mode changes or selection cleared
+  useEffect(() => { navSnapRef.current = null; }, [sortMode]);
+  useEffect(() => { if (!selectedLogin && (!selectedLogins || selectedLogins.length === 0)) { navSnapRef.current = null; } }, [selectedLogin, selectedLogins]);
+
+  // Click outside chart/details clears selection
+  useEffect(() => {
+    const handler = (e) => {
+      try {
+        const elChart = chartRef.current; const elDetails = detailsRef.current;
+        const t = e && (e.target || null);
+        if (elChart && t && elChart.contains(t)) return;
+        if (elDetails && t && elDetails.contains(t)) return;
+        if (selectedLoginRef.current || (selectedLoginsRef.current && selectedLoginsRef.current.length)) {
+          setSelectedLogin(null);
+          setSelectedLogins([]);
+          navSnapRef.current = null;
+        }
+      } catch {}
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [chartReady]);
 
   useEffect(() => {
     if (!login) return;
@@ -2164,6 +2264,110 @@ export default function ChattersChart() {
       <Box mt="3" style={{ height: 600 }}>
         <div ref={chartRef} style={{ width: '100%', height: '100%' }} />
       </Box>
+      {Array.isArray(selectedLogins) && selectedLogins.length > 0 && (
+        <Box ref={detailsRef} mt="3">
+          <Heading size="4">Selection</Heading>
+          <Flex mt="2" gap="2" wrap="wrap" align="start" justify="start">
+            {selectedLogins.map((lg) => {
+              const uname = (namesRef.current.get(lg) || lg);
+              const arr = segmentsRef.current.get(lg) || [];
+              const last = arr[arr.length - 1];
+              const present = !!(last && last.end == null);
+              let lastVisit = null;
+              if (arr.length > 0) {
+                const l = arr[arr.length - 1];
+                lastVisit = (l.end == null) ? l.start : l.end;
+              }
+              // Current window
+              let wStartH = null, wEndH = null;
+              try {
+                const inst = chartInstance.current; const opt = inst && inst.getOption();
+                const xa = (opt && Array.isArray(opt.xAxis) && opt.xAxis[0]) || {};
+                if (typeof xa.min === 'number' && typeof xa.max === 'number') { wStartH = xa.min; wEndH = xa.max; }
+              } catch {}
+              // Time in window
+              const nowH = nowMarkTs;
+              let winMs = 0;
+              if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+                for (const seg of arr) {
+                  if (typeof seg.start !== 'number') continue;
+                  const s = Math.max(wStartH, seg.start);
+                  const e = Math.min(wEndH, seg.end == null ? nowH : seg.end);
+                  if (e > s) winMs += (e - s);
+                }
+              }
+              // Messages in window
+              const msgsAll = messagesRef.current.get(lg) || [];
+              const msgsWin = [];
+              if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+                for (const m of msgsAll) { const t = m && m.t; if (typeof t === 'number' && t >= wStartH && t <= wEndH) msgsWin.push(m); }
+              } else {
+                for (const m of msgsAll) { if (m && typeof m.t === 'number') msgsWin.push(m); }
+              }
+              msgsWin.sort((a, b) => (a.t || 0) - (b.t || 0));
+              const msgCount = msgsWin.length;
+
+              // Session metrics (based on selected session)
+              let sessStart = null, sessEnd = null;
+              let sessMs = 0, sessFirst = null, sessLast = null, sessVisits = 0, sessMsgCount = 0;
+              let sessIsLive = false;
+              if (selectedSessionId && selectedSessionId !== 'offline' && Array.isArray(sessions)) {
+                const meta = sessions.find(s => s && s.id === selectedSessionId);
+                if (meta) {
+                  sessStart = (typeof meta.start === 'number') ? meta.start : (Date.parse(meta.id) || null);
+                  sessEnd = (typeof meta.end === 'number') ? meta.end : nowH;
+                  sessIsLive = !(typeof meta.end === 'number');
+                  if (sessStart != null && sessEnd != null && sessEnd > sessStart) {
+                    for (const seg of arr) {
+                      if (typeof seg.start !== 'number') continue;
+                      const s = Math.max(sessStart, seg.start);
+                      const e = Math.min(sessEnd, seg.end == null ? nowH : seg.end);
+                      if (e > s) {
+                        sessMs += (e - s);
+                        sessVisits += 1;
+                        if (sessFirst == null || s < sessFirst) sessFirst = s;
+                        if (sessLast == null || e > sessLast) sessLast = e;
+                      }
+                    }
+                    for (const m of msgsAll) { const t = m && m.t; if (typeof t === 'number' && t >= sessStart && t <= sessEnd) sessMsgCount++; }
+                  }
+                }
+              }
+              return (
+                <Card key={lg} style={{ width: '100%', maxWidth: '100%', flex: '1 1 100%', display: 'block' }}>
+                  <Heading size="3">{uname}</Heading>
+                  <Text as="div" color="gray">{lg}</Text>
+                  <Separator my="2" />
+                  <Text as="div">Present: <Code>{present ? 'yes' : 'no'}</Code></Text>
+                  {lastVisit != null && (<Text as="div">Last change: <Code>{dtfFull.format(lastVisit)}</Code></Text>)}
+                  {(typeof wStartH === 'number' && typeof wEndH === 'number') && (
+                    <Text as="div">Time in window: <Code>{fmtShortDur(winMs)}</Code></Text>
+                  )}
+                  {(sessStart != null && sessEnd != null) && (
+                    <>
+                      <Separator my="2" />
+                      <Text as="div">Session: <Code>{dtfFull.format(sessStart)} → {sessIsLive ? 'LIVE' : dtfFull.format(sessEnd)}</Code></Text>
+                      <Text as="div">Time in session: <Code>{fmtShortDur(sessMs)}</Code></Text>
+                      {sessFirst != null && (<Text as="div">First in session: <Code>{dtfFull.format(sessFirst)}</Code></Text>)}
+                      {sessLast != null && (<Text as="div">Last in session: <Code>{dtfFull.format(sessLast)}</Code></Text>)}
+                      <Text as="div">Visits in session: <Code>{sessVisits}</Code></Text>
+                      <Text as="div">Messages (session): <Code>{sessMsgCount}</Code></Text>
+                    </>
+                  )}
+                  <Text as="div">Messages{(typeof wStartH==='number'&&typeof wEndH==='number')?' (window)':''}: <Code>{msgCount}</Code></Text>
+                  {msgCount > 0 && (
+                    <Box mt="2" style={{ maxHeight: 200, width: '100%', overflow: 'auto', border: '1px solid var(--gray-6)', borderRadius: 6, padding: 6, whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere', lineHeight: 1.2 }}>
+                      {msgsWin.map((m, idx) => (
+                        <Text as="div" key={m.id || `${m.t || 0}-${idx}`} style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{dtfFull.format(m.t)} — {String(m.txt || '')}</Text>
+                      ))}
+                    </Box>
+                  )}
+                </Card>
+              );
+            })}
+          </Flex>
+        </Box>
+      )}
       <Box mt="3" style={{ height: 180 }}>
         <div ref={distChartRef} style={{ width: '100%', height: '100%' }} />
       </Box>

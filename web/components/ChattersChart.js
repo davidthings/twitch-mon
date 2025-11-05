@@ -2261,7 +2261,7 @@ export default function ChattersChart() {
           })()}
         </Flex>
       </Flex>
-      <Box mt="3" style={{ height: 600 }}>
+      <Box mt="3" style={{ height: 900 }}>
         <div ref={chartRef} style={{ width: '100%', height: '100%' }} />
       </Box>
       {Array.isArray(selectedLogins) && selectedLogins.length > 0 && (

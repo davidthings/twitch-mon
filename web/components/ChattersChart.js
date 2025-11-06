@@ -2254,6 +2254,48 @@ export default function ChattersChart() {
     if (finished.length) setSelectedSessionId(finished[finished.length - 1].id);
   }, [sessions, login, selectedSessionId]);
 
+  // When a session chip is selected, focus the main window to that session with small padding.
+  useEffect(() => {
+    try {
+      if (!chartReady) return;
+      const name = (login||'').trim();
+      const inst = chartInstance.current; if (!inst) return;
+      const PADDING_MS = 2 * 60 * 1000; // ~2 minutes
+      const now = nowMarkTs;
+      let ss = null, ee = null;
+      if (selectedSessionId === 'offline') {
+        // Window: since last finished session end -> now
+        let lastEnd = null;
+        if (Array.isArray(sessions)) {
+          for (const s of sessions) {
+            if (s && typeof s.end === 'number') {
+              if (lastEnd == null || s.end > lastEnd) lastEnd = s.end;
+            }
+          }
+        }
+        if (typeof lastEnd === 'number') { ss = lastEnd; ee = now; }
+      } else if (selectedSessionId && Array.isArray(sessions)) {
+        const meta = sessions.find(s => s && s.id === selectedSessionId);
+        if (meta) {
+          const start = (typeof meta.start === 'number') ? meta.start : (Date.parse(meta.id) || now);
+          const end = (typeof meta.end === 'number') ? meta.end : now;
+          ss = Math.max(0, start - PADDING_MS);
+          ee = end + PADDING_MS;
+        }
+      }
+      if (!(typeof ss === 'number' && typeof ee === 'number' && ee > ss)) return;
+      setFitMode(false);
+      setPinRight(selectedSessionId !== 'offline' && sessions && sessions.find(s => s && s.id === selectedSessionId && typeof s.end !== 'number'));
+      setWinStart(ss);
+      setWinEnd(ee);
+      if (name) saveJSON(windowKeyNorm(name), { start: ss, end: ee });
+      // Apply immediately to the zoom thumbs
+      zoomLockRef.current = true;
+      inst.dispatchAction({ type: 'dataZoom', startValue: ss, endValue: ee, xAxisIndex: [0, 1] });
+      setTimeout(() => { zoomLockRef.current = false; }, 0);
+    } catch {}
+  }, [selectedSessionId, sessions, chartReady, login, nowMarkTs]);
+
   return (
     <Card>
       <Heading size="5">Chatters Timeline — {visRows.length} users</Heading>

@@ -55,6 +55,7 @@ export default function ChattersChart() {
   const [yStartIdx, setYStartIdx] = useState(0);
   const [yEndIdx, setYEndIdx] = useState(0);
   const [sortMode, setSortMode] = useState('default'); // 'default' | 'time'
+  const [groupByPresent, setGroupByPresent] = useState(true);
   const [selectedLogin, setSelectedLogin] = useState(null);
   const selectedLoginRef = useRef(null);
   const [selectedLogins, setSelectedLogins] = useState([]);
@@ -211,7 +212,7 @@ export default function ChattersChart() {
     }
     // Clear active snapshot so first Arrow uses the updated order
     navSnapRef.current = null;
-  }, [sortMode, chartReady]);
+  }, [sortMode, groupByPresent, chartReady]);
 
   useEffect(() => {
     if (!broadcasterId || !user) return;
@@ -391,21 +392,30 @@ export default function ChattersChart() {
         const l = arr[arr.length - 1];
         lastVisit = (l && l.end == null) ? l.start : (l ? l.end : -Infinity);
       }
+      let firstIn = Infinity;
       let windowMs = 0;
       let totalMs = 0;
       if (arr.length > 0) {
         for (const seg of arr) {
           if (typeof seg.start !== 'number') continue;
           const eAll = seg.end == null ? now : seg.end;
+          if (typeof wStart === 'number' && typeof wEnd === 'number') {
+            if (eAll >= wStart && seg.start <= wEnd) {
+              const cand = (seg.start < wStart) ? wStart : seg.start;
+              if (cand < firstIn) firstIn = cand;
+            }
+          } else {
+            if (seg.start < firstIn) firstIn = seg.start;
+          }
           if (eAll > seg.start) totalMs += (eAll - seg.start);
           if (typeof wStart === 'number' && typeof wEnd === 'number') {
             const s = Math.max(wStart, seg.start);
-            const e = Math.min(wEnd, seg.end == null ? now : seg.end);
+            const e = Math.min(wEnd, eAll);
             if (e > s) windowMs += (e - s);
           }
         }
       }
-      stats.push({ login: loginKey, present, currentDur, lastVisit, windowMs, totalMs, hasMsgAny, hasMsgWin });
+      stats.push({ login: loginKey, present, currentDur, lastVisit, firstIn, windowMs, totalMs, hasMsgAny, hasMsgWin });
     }
     // Apply filtering and sorting
     let filtered = stats.slice();
@@ -419,45 +429,82 @@ export default function ChattersChart() {
       }
     }
     if (sortMode === 'time') {
-      // Total time in room (all history), highest on top
-      filtered.sort((a, b) => {
-        if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
-        return a.login.localeCompare(b.login);
-      });
-      setVisRows(filtered.map(x => x.login));
+      if (groupByPresent) {
+        const presentStats = filtered.filter(s => s.present).sort((a, b) => {
+          if (b.windowMs !== a.windowMs) return b.windowMs - a.windowMs;
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
+          if (b.windowMs !== a.windowMs) return b.windowMs - a.windowMs;
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        setVisRows([...presentStats, ...notPresentStats].map(x => x.login));
+      } else {
+        const ordered = filtered.slice().sort((a, b) => {
+          if (b.windowMs !== a.windowMs) return b.windowMs - a.windowMs;
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        setVisRows(ordered.map(x => x.login));
+      }
     } else if (sortMode === 'ins') {
-      const presentStats = filtered.filter(s => s.present).sort((a, b) => {
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
-        return a.login.localeCompare(b.login);
-      });
-      const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
-        return a.login.localeCompare(b.login);
-      });
-      const ordered = [...presentStats, ...notPresentStats];
-      const pinnedFirst = [];
-      const rest = [];
-      for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
-      setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      if (groupByPresent) {
+        const presentStats = filtered.filter(s => s.present).sort((a, b) => {
+          if (a.firstIn !== b.firstIn) return a.firstIn - b.firstIn;
+          return a.login.localeCompare(b.login);
+        });
+        const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
+          if (a.firstIn !== b.firstIn) return a.firstIn - b.firstIn;
+          return a.login.localeCompare(b.login);
+        });
+        const ordered = [...presentStats, ...notPresentStats];
+        const pinnedFirst = [];
+        const rest = [];
+        for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+        setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      } else {
+        const ordered = filtered.slice().sort((a, b) => {
+          if (a.firstIn !== b.firstIn) return a.firstIn - b.firstIn;
+          return a.login.localeCompare(b.login);
+        });
+        const pinnedFirst = [];
+        const rest = [];
+        for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+        setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      }
     } else {
-      // Order entered/exited: present first by longest current duration; then not-present by recency
-      const presentStats = filtered.filter(s => s.present).sort((a, b) => {
-        if (b.currentDur !== a.currentDur) return b.currentDur - a.currentDur;
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
-        return a.login.localeCompare(b.login);
-      });
-      const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
-        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
-        return a.login.localeCompare(b.login);
-      });
-      const ordered = [...presentStats, ...notPresentStats];
-      const pinnedFirst = [];
-      const rest = [];
-      for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
-      setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      if (groupByPresent) {
+        const presentStats = filtered.filter(s => s.present).sort((a, b) => {
+          if (b.currentDur !== a.currentDur) return b.currentDur - a.currentDur;
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        const ordered = [...presentStats, ...notPresentStats];
+        const pinnedFirst = [];
+        const rest = [];
+        for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+        setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      } else {
+        const ordered = filtered.slice().sort((a, b) => {
+          const aDur = a.present ? a.currentDur : 0;
+          const bDur = b.present ? b.currentDur : 0;
+          if (bDur !== aDur) return bDur - aDur;
+          if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+          return a.login.localeCompare(b.login);
+        });
+        const pinnedFirst = [];
+        const rest = [];
+        for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+        setVisRows([...pinnedFirst, ...rest].map(x => x.login));
+      }
     }
-  }, [rows, filterMode, winStart, winEnd, search, pinnedSet, sortMode, messagesTick]);
+  }, [rows, filterMode, winStart, winEnd, search, pinnedSet, sortMode, groupByPresent, messagesTick]);
 
   useEffect(() => {
     const name = (login||'').trim();
@@ -498,6 +545,12 @@ export default function ChattersChart() {
       }
       const savedPins = loadJSON(pinsKeyNorm(name), []);
       setPinnedArr(Array.isArray(savedPins) ? savedPins : []);
+      const savedSort = loadJSON(sortKeyNorm(name), null);
+      if (savedSort === 'default' || savedSort === 'time' || savedSort === 'ins') setSortMode(savedSort);
+      const savedGroup = loadJSON(groupKeyNorm(name), null);
+      if (typeof savedGroup === 'boolean') setGroupByPresent(!!savedGroup);
+      const savedFilter = loadJSON(filterKeyNorm(name), null);
+      if (savedFilter === 'all' || savedFilter === 'present' || savedFilter === 'messagers') setFilterMode(savedFilter);
     }
   }, [login]);
 
@@ -583,6 +636,9 @@ export default function ChattersChart() {
   const pinsKeyNorm = (lg) => `tm_chatters_pins_${(lg||'').trim().toLowerCase()}`;
   const msgsCaptureKey = (lg) => `tm_chatters_capture_msgs_${(lg||'').trim().toLowerCase()}`;
   const msgDotsKey = (lg) => `tm_chatters_show_msg_dots_${(lg||'').trim().toLowerCase()}`;
+  const sortKeyNorm = (lg) => `tm_chatters_sort_${(lg||'').trim().toLowerCase()}`;
+  const groupKeyNorm = (lg) => `tm_chatters_group_${(lg||'').trim().toLowerCase()}`;
+  const filterKeyNorm = (lg) => `tm_chatters_filter_${(lg||'').trim().toLowerCase()}`;
 
   const tzResolved = timeZone === 'system' ? undefined : timeZone;
   const dtfTick = useMemo(() => new Intl.DateTimeFormat(undefined, { timeZone: tzResolved, hour: '2-digit', minute: '2-digit' }), [timeZone]);
@@ -2129,7 +2185,7 @@ export default function ChattersChart() {
   }, [chartReady, visRows, nowMarkTs]);
 
   // Clear snapshot when sort mode changes or selection cleared
-  useEffect(() => { navSnapRef.current = null; }, [sortMode]);
+  useEffect(() => { navSnapRef.current = null; }, [sortMode, groupByPresent]);
   useEffect(() => { if (!selectedLogin && (!selectedLogins || selectedLogins.length === 0)) { navSnapRef.current = null; } }, [selectedLogin, selectedLogins]);
 
   // Click outside chart/details clears selection
@@ -2178,13 +2234,18 @@ export default function ChattersChart() {
         {/* Capture chat messages and Show chat dots controls removed; always on */}
         <Button
           variant="soft"
-          onClick={() => setFilterMode(m => (m === 'all' ? 'present' : (m === 'present' ? 'messagers' : 'all')))}
+          onClick={() => { const next = (filterMode === 'all' ? 'present' : (filterMode === 'present' ? 'messagers' : 'all')); setFilterMode(next); const name = (login||'').trim(); if (name) saveJSON(filterKeyNorm(name), next); }}
         >{`Filter: ${filterMode === 'all' ? 'all' : (filterMode === 'present' ? 'in chat now' : 'messagers')}`}</Button>
         <Button
           variant="soft"
           color="indigo"
-          onClick={() => setSortMode(m => (m === 'default' ? 'time' : (m === 'time' ? 'ins' : 'default')))}
+          onClick={() => { const next = (sortMode === 'default' ? 'time' : (sortMode === 'time' ? 'ins' : 'default')); setSortMode(next); const name = (login||'').trim(); if (name) saveJSON(sortKeyNorm(name), next); }}
         >{`Sort: ${sortMode === 'time' ? 'time in room' : (sortMode === 'ins' ? 'INs' : 'ins/outs')}`}</Button>
+        <Button
+          variant="soft"
+          color="indigo"
+          onClick={() => { const next = !groupByPresent; setGroupByPresent(next); const name = (login||'').trim(); if (name) saveJSON(groupKeyNorm(name), next); }}
+        >{`Group: ${groupByPresent ? 'in room/not' : 'none'}`}</Button>
         <Button
           variant={fitMode ? 'solid' : 'soft'}
           color="gray"

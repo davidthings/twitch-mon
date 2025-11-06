@@ -426,6 +426,20 @@ export default function ChattersChart() {
         return a.login.localeCompare(b.login);
       });
       setVisRows(filtered.map(x => x.login));
+    } else if (sortMode === 'ins') {
+      const presentStats = filtered.filter(s => s.present).sort((a, b) => {
+        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+        return a.login.localeCompare(b.login);
+      });
+      const notPresentStats = filtered.filter(s => !s.present).sort((a, b) => {
+        if (b.lastVisit !== a.lastVisit) return b.lastVisit - a.lastVisit;
+        return a.login.localeCompare(b.login);
+      });
+      const ordered = [...presentStats, ...notPresentStats];
+      const pinnedFirst = [];
+      const rest = [];
+      for (const it of ordered) { (pinnedSet.has(it.login) ? pinnedFirst : rest).push(it); }
+      setVisRows([...pinnedFirst, ...rest].map(x => x.login));
     } else {
       // Order entered/exited: present first by longest current duration; then not-present by recency
       const presentStats = filtered.filter(s => s.present).sort((a, b) => {
@@ -2169,8 +2183,8 @@ export default function ChattersChart() {
         <Button
           variant="soft"
           color="indigo"
-          onClick={() => setSortMode(m => m === 'time' ? 'default' : 'time')}
-        >{`Sort: ${sortMode === 'time' ? 'time in room' : 'ins/outs'}`}</Button>
+          onClick={() => setSortMode(m => (m === 'default' ? 'time' : (m === 'time' ? 'ins' : 'default')))}
+        >{`Sort: ${sortMode === 'time' ? 'time in room' : (sortMode === 'ins' ? 'INs' : 'ins/outs')}`}</Button>
         <Button
           variant={fitMode ? 'solid' : 'soft'}
           color="gray"

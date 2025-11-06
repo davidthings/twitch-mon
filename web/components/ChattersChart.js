@@ -1075,7 +1075,7 @@ export default function ChattersChart() {
               const h = Math.max(2, band * 0.6);
               const left = Math.min(x0, x1);
               const width = Math.max(1, Math.abs(x1 - x0));
-              const fill = present ? '#4f46e5' : '#f59e0b';
+              const fill = present ? '#818cf8' : '#f59e0b';
               const opacity = present ? 1 : 0.75;
               return { type: 'rect', shape: { x: left, y: y - h / 2, width: width, height: h }, style: { fill, opacity } };
             },
@@ -1689,7 +1689,7 @@ export default function ChattersChart() {
           let left = Math.min(x0, x1);
           let width = Math.max(1, Math.abs(x1 - x0));
           if (Math.abs(x1 - x0) < 0.5) { left = x0 - 1; width = 1; }
-          const fill = present ? '#4f46e5' : '#f59e0b';
+          const fill = present ? '#818cf8' : '#f59e0b';
           const opacity = present ? 1 : 0.75;
           const children = [ { type: 'rect', shape: { x: left, y: y - h / 2, width, height: h }, style: { fill, opacity } } ];
           const stubW = 6;

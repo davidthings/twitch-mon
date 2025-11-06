@@ -977,8 +977,8 @@ export default function ChattersChart() {
       inst.setOption({
         animation: false,
         grid: [
-          { left: 40, right: 56, top: 64, height: '62%', containLabel: false },
-          { left: 40, right: 56, top: '72%', height: '18%', containLabel: false },
+          { left: 40, right: 56, top: 76, height: '58%', containLabel: true },
+          { left: 40, right: 56, top: '82%', height: '14%', containLabel: true },
         ],
         axisPointer: { label: { formatter: (obj) => {
           const raw = obj && obj.value;
@@ -1280,11 +1280,12 @@ export default function ChattersChart() {
     const PRE_PAD = 30 * 60 * 1000;
     const LIVE_PAD = 5 * 60 * 1000;
     const FINISHED_PAD = 30 * 60 * 1000;
-    // Full extent (overview track)
     let fullMin = now - OFFLINE_WINDOW_MS;
     let fullMax = now + LIVE_PAD;
     const ext = getDataExtent();
     if (ext) { fullMin = ext.min - PRE_PAD; fullMax = ext.max + LIVE_PAD; }
+    const topAxisMin = ext ? ext.min : fullMin;
+    const topAxisMax = ext ? ext.max : fullMax;
     // Selection window (thumbs)
     let selStart = winStart, selEnd = winEnd;
     if (fitMode && ext) {
@@ -1346,18 +1347,15 @@ export default function ChattersChart() {
         return String(val ?? '');
       } } },
       xAxis: needFull ? [
-        // Main chart axis at bottom (grid 0)
-        { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
-        // Flow chart axis (grid 1)
-        { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 1, axisLabel: { formatter: (val) => dtfTick.format(val) } },
-        // Additional top axis for window selector labels (grid 0, top)
-        { type: 'time', boundaryGap: false, position: 'top', min: fullMin, max: fullMax, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
+        { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 0, name: 'Presence', nameLocation: 'middle', nameGap: 28, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10 } },
+        { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 1, name: 'Flow (In/Out)', nameLocation: 'middle', nameGap: 24, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10 } },
+        { type: 'time', boundaryGap: false, position: 'top', min: topAxisMin, max: topAxisMax, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
       ] : undefined,
       dataZoom: [
         {
           type: 'slider',
           show: true,
-          xAxisIndex: [0, 1, 2],
+          xAxisIndex: [0, 1],
           filterMode: 'none',
           throttle: 100,
           height: 28,
@@ -1599,7 +1597,7 @@ export default function ChattersChart() {
       } catch {}
     }
     inst.setOption({
-      xAxis: [{ type: 'value', min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val) } }],
+      xAxis: [{ type: 'value', name: 'Duration', nameLocation: 'middle', nameGap: 28, min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val) } }],
       yAxis: [{ type: 'value', min: 0, max: axisMax, name: 'People' }],
       series: [
         {
@@ -2535,7 +2533,8 @@ export default function ChattersChart() {
           </Flex>
         </Box>
       )}
-      <Box mt="3" style={{ height: 180 }}>
+      <Heading size="4">Duration</Heading>
+      <Box mt="2" style={{ height: 180 }}>
         <div ref={distChartRef} style={{ width: '100%', height: '100%' }} />
       </Box>
     </Card>

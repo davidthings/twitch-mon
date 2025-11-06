@@ -65,6 +65,8 @@ export default function ChattersChart() {
   const navSnapRef = useRef(null); // active snapshot used during Arrow nav
   const [orderLocked, setOrderLocked] = useState(false);
   const orderLockedRef = useRef(false);
+  const autoSelectSessionRef = useRef(true);
+  const appliedForSessionRef = useRef(null);
   // Chat messages capture and dots
   const messagesRef = useRef(new Map()); // login -> [{ t, id?, txt }]
   const [messagesTick, setMessagesTick] = useState(0);
@@ -975,7 +977,7 @@ export default function ChattersChart() {
       inst.setOption({
         animation: false,
         grid: [
-          { left: 40, right: 56, top: 16, height: '62%', containLabel: false },
+          { left: 40, right: 56, top: 64, height: '62%', containLabel: false },
           { left: 40, right: 56, top: '72%', height: '18%', containLabel: false },
         ],
         axisPointer: { label: { formatter: (obj) => {
@@ -1344,18 +1346,22 @@ export default function ChattersChart() {
         return String(val ?? '');
       } } },
       xAxis: needFull ? [
+        // Main chart axis at bottom (grid 0)
         { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
+        // Flow chart axis (grid 1)
         { type: 'time', boundaryGap: false, min: fullMin, max: fullMax, gridIndex: 1, axisLabel: { formatter: (val) => dtfTick.format(val) } },
+        // Additional top axis for window selector labels (grid 0, top)
+        { type: 'time', boundaryGap: false, position: 'top', min: fullMin, max: fullMax, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
       ] : undefined,
       dataZoom: [
         {
           type: 'slider',
           show: true,
-          xAxisIndex: [0, 1],
+          xAxisIndex: [0, 1, 2],
           filterMode: 'none',
           throttle: 100,
-          height: 24,
-          bottom: 4,
+          height: 28,
+          top: 6,
           brushSelect: false,
           startValue: selStart,
           endValue: selEnd,
@@ -1403,6 +1409,13 @@ export default function ChattersChart() {
           ss = snap(s);
           ee = snap(e);
           if (!(ee > ss)) { ee = s; ss = s; }
+        }
+        if (selectedSessionId != null) {
+          autoSelectSessionRef.current = false;
+          appliedForSessionRef.current = null;
+          setSelectedSessionId(null);
+          const name = (login||'').trim();
+          if (name) try { saveJSON(selectedSessionKey(name), null); } catch {}
         }
         // Determine if end thumb is at right edge (pin it)
         const PRE_PAD = 30 * 60 * 1000;
@@ -2247,6 +2260,7 @@ export default function ChattersChart() {
   useEffect(() => {
     if (!login) return;
     if (selectedSessionId) return;
+    if (!autoSelectSessionRef.current) return;
     if (!Array.isArray(sessions) || sessions.length === 0) return;
     const activeId = activeSessionIdRef.current;
     if (activeId) { setSelectedSessionId(activeId); return; }
@@ -2258,34 +2272,45 @@ export default function ChattersChart() {
   useEffect(() => {
     try {
       if (!chartReady) return;
+      const selId = selectedSessionId;
+      if (!selId) return;
+      if (appliedForSessionRef.current === selId) return; // only apply once per selection
       const name = (login||'').trim();
       const inst = chartInstance.current; if (!inst) return;
       const PADDING_MS = 2 * 60 * 1000; // ~2 minutes
-      const now = nowMarkTs;
+      const now = Date.now();
       let ss = null, ee = null;
-      if (selectedSessionId === 'offline') {
+      if (selId === 'offline') {
         // Window: since last finished session end -> now
         let lastEnd = null;
-        if (Array.isArray(sessions)) {
-          for (const s of sessions) {
-            if (s && typeof s.end === 'number') {
-              if (lastEnd == null || s.end > lastEnd) lastEnd = s.end;
-            }
-          }
+        const sess = Array.isArray(sessions) ? sessions : [];
+        for (const s of sess) {
+          if (s && typeof s.end === 'number') { if (lastEnd == null || s.end > lastEnd) lastEnd = s.end; }
         }
         if (typeof lastEnd === 'number') { ss = lastEnd; ee = now; }
-      } else if (selectedSessionId && Array.isArray(sessions)) {
-        const meta = sessions.find(s => s && s.id === selectedSessionId);
+        setPinRight(false);
+      } else if (selId === 'all') {
+        const ext = getDataExtent();
+        if (ext) {
+          const PRE_PAD = 30 * 60 * 1000;
+          const LIVE_PAD = 5 * 60 * 1000;
+          ss = ext.min - PRE_PAD;
+          ee = ext.max + LIVE_PAD;
+          setPinRight(true);
+        }
+      } else {
+        const sess = Array.isArray(sessions) ? sessions : [];
+        const meta = sess.find(s => s && s.id === selId);
         if (meta) {
           const start = (typeof meta.start === 'number') ? meta.start : (Date.parse(meta.id) || now);
           const end = (typeof meta.end === 'number') ? meta.end : now;
           ss = Math.max(0, start - PADDING_MS);
           ee = end + PADDING_MS;
+          setPinRight(!(typeof meta.end === 'number'));
         }
       }
       if (!(typeof ss === 'number' && typeof ee === 'number' && ee > ss)) return;
       setFitMode(false);
-      setPinRight(selectedSessionId !== 'offline' && sessions && sessions.find(s => s && s.id === selectedSessionId && typeof s.end !== 'number'));
       setWinStart(ss);
       setWinEnd(ee);
       if (name) saveJSON(windowKeyNorm(name), { start: ss, end: ee });
@@ -2293,8 +2318,15 @@ export default function ChattersChart() {
       zoomLockRef.current = true;
       inst.dispatchAction({ type: 'dataZoom', startValue: ss, endValue: ee, xAxisIndex: [0, 1] });
       setTimeout(() => { zoomLockRef.current = false; }, 0);
+      appliedForSessionRef.current = selId;
     } catch {}
-  }, [selectedSessionId, sessions, chartReady, login, nowMarkTs]);
+  }, [selectedSessionId, chartReady, login]);
+
+  useEffect(() => {
+    const name = (login||'').trim();
+    if (!name) return;
+    try { saveJSON(selectedSessionKey(name), selectedSessionId || null); } catch {}
+  }, [selectedSessionId, login]);
 
   return (
     <Card>
@@ -2303,9 +2335,7 @@ export default function ChattersChart() {
       {!pollInfo.error && pollInfo.at && (<Text color="gray" as="p">Last poll: {dtfFull.format(pollInfo.at)} — present: {pollInfo.count}</Text>)}
       <Separator my="3" />
       <Flex align="center" gap="2" wrap="wrap">
-        <Text>Timezone:</Text>
-        <Code>{timeZone === 'system' ? 'System' : timeZone}</Code>
-        <Button variant="soft" onClick={() => setTzEditing(true)}>Change</Button>
+        <Button variant="soft" onClick={() => setTzEditing(true)}>{`Timezone: ${timeZone === 'system' ? 'System' : timeZone}`}</Button>
         <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
         <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
         <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
@@ -2325,17 +2355,6 @@ export default function ChattersChart() {
           color="indigo"
           onClick={() => { const next = !groupByPresent; setGroupByPresent(next); const name = (login||'').trim(); if (name) saveJSON(groupKeyNorm(name), next); }}
         >{`Group: ${groupByPresent ? 'in room/not' : 'none'}`}</Button>
-        <Button
-          variant={fitMode ? 'solid' : 'soft'}
-          color="gray"
-          onClick={() => {
-            const next = !fitMode;
-            setFitMode(next);
-            const name = (login||'').trim();
-            if (name) saveJSON(fitKeyNorm(name), next);
-            if (next) { setPinRight(true); fitToData(); }
-          }}
-        >{`Fit: ${fitMode ? 'All' : 'Partial'}`}</Button>
         <Button variant={pinMode ? 'solid' : 'soft'} color="indigo" onClick={() => setPinMode(v => !v)}>Pin mode</Button>
         <TextField.Root value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users" />
       </Flex>
@@ -2383,13 +2402,13 @@ export default function ChattersChart() {
             const showOffline = !isLive;
             if (showOffline) {
               nodes.push(
-                <Button key="__offline__" variant={selectedSessionId==='offline' ? 'solid' : 'soft'} onClick={() => setSelectedSessionId('offline')}>OFFLINE</Button>
+                <Button key="__offline__" variant={selectedSessionId==='offline' ? 'solid' : 'soft'} onClick={() => { appliedForSessionRef.current = null; autoSelectSessionRef.current = false; setSelectedSessionId('offline'); }}>OFFLINE</Button>
               );
             }
             const activeMeta = sessions.find(s => s.id === activeId);
             if (activeMeta) {
               nodes.push(
-                <Button key={activeMeta.id} variant={selectedSessionId===activeMeta.id ? 'solid' : 'soft'} onClick={() => setSelectedSessionId(activeMeta.id)}>
+                <Button key={activeMeta.id} variant={selectedSessionId===activeMeta.id ? 'solid' : 'soft'} onClick={() => { appliedForSessionRef.current = null; autoSelectSessionRef.current = false; setSelectedSessionId(activeMeta.id); }}>
                   {dtfShort.format(activeMeta.start)}{(activeMeta.id === activeId && isLive) ? ': LIVE' : ''}
                 </Button>
               );
@@ -2397,11 +2416,14 @@ export default function ChattersChart() {
             const finished = sessions.filter(s => !!s.end && s.id !== activeId).slice(-5).reverse();
             for (const s of finished) {
               nodes.push(
-                <Button key={s.id} variant={selectedSessionId===s.id ? 'solid' : 'soft'} onClick={() => setSelectedSessionId(s.id)}>
+                <Button key={s.id} variant={selectedSessionId===s.id ? 'solid' : 'soft'} onClick={() => { appliedForSessionRef.current = null; autoSelectSessionRef.current = false; setSelectedSessionId(s.id); }}>
                   {dtfShort.format(s.start)}
                 </Button>
               );
             }
+            nodes.push(
+              <Button key="__all__" variant={selectedSessionId==='all' ? 'solid' : 'soft'} onClick={() => { appliedForSessionRef.current = null; autoSelectSessionRef.current = false; setSelectedSessionId('all'); }}>ALL</Button>
+            );
             return nodes;
           })()}
         </Flex>

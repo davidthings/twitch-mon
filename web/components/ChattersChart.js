@@ -991,42 +991,57 @@ export default function ChattersChart() {
         tooltip: { trigger: 'item', confine: true, extraCssText: 'max-width: 520px; white-space: normal; line-height: 1.2; word-break: break-word; overflow-wrap: anywhere;', formatter: (params) => {
           try {
             const p = Array.isArray(params) ? params[0] : params;
-            if (!p || p.seriesId !== 'presence') return ' ';
-            const d = p.data;
-            const loginKey = d && d.login;
-            if (!loginKey) return ' ';
-            const uname = (namesRef.current.get(loginKey)) || loginKey || '';
-            const arr = segmentsRef.current.get(loginKey) || [];
-            const now = Date.now();
-            // Determine current main chart window (top xAxis)
-            let wStartH = null, wEndH = null;
-            try {
-              const optH = inst.getOption();
-              const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
-              if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
-            } catch {}
-            // Compute total time in window
-            let windowMs = 0;
-            if (typeof wStartH === 'number' && typeof wEndH === 'number') {
-              for (const seg of arr) {
-                if (typeof seg?.start !== 'number') continue;
-                const s = Math.max(wStartH, seg.start);
-                const e = Math.min(wEndH, seg.end == null ? now : seg.end);
-                if (e > s) windowMs += (e - s);
+            if (!p) return ' ';
+            // Presence hover: show user, time-in-window, messages
+            if (p.seriesId === 'presence') {
+              const d = p.data;
+              const loginKey = d && d.login;
+              if (!loginKey) return ' ';
+              const uname = (namesRef.current.get(loginKey)) || loginKey || '';
+              const arr = segmentsRef.current.get(loginKey) || [];
+              const now = Date.now();
+              let wStartH = null, wEndH = null;
+              try {
+                const optH = inst.getOption();
+                const xaH = (optH && Array.isArray(optH.xAxis) && optH.xAxis[0]) || {};
+                if (typeof xaH.min === 'number' && typeof xaH.max === 'number') { wStartH = xaH.min; wEndH = xaH.max; }
+              } catch {}
+              let windowMs = 0;
+              if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+                for (const seg of arr) {
+                  if (typeof seg?.start !== 'number') continue;
+                  const s = Math.max(wStartH, seg.start);
+                  const e = Math.min(wEndH, seg.end == null ? now : seg.end);
+                  if (e > s) windowMs += (e - s);
+                }
               }
+              const msgsAll = messagesRef.current.get(loginKey) || [];
+              let msgCount = 0;
+              if (typeof wStartH === 'number' && typeof wEndH === 'number') {
+                for (const m of msgsAll) { const t = m && m.t; if (typeof t === 'number' && t >= wStartH && t <= wEndH) msgCount++; }
+              } else {
+                msgCount = msgsAll.length;
+              }
+              return `${uname} (${loginKey || ''})<br/>Time in window: ${fmtShortDur(windowMs)}<br/>Messages: ${msgCount}`;
             }
-            // Count messages in window
-            const msgsAll = messagesRef.current.get(loginKey) || [];
-            let msgCount = 0;
-            if (typeof wStartH === 'number' && typeof wEndH === 'number') {
-              for (const m of msgsAll) { const t = m && m.t; if (typeof t === 'number' && t >= wStartH && t <= wEndH) msgCount++; }
-            } else {
-              msgCount = msgsAll.length;
+            // Flow bars: show timestamp, +in/-out counts and names, net
+            if (p.seriesId === 'flow-arrivals' || p.seriesId === 'flow-departures') {
+              const d = p.data || {};
+              const val = Array.isArray(d.value) ? d.value : (Array.isArray(p.value) ? p.value : []);
+              const t = Array.isArray(val) ? val[0] : null;
+              const ins = Array.isArray(d.ins) ? d.ins : [];
+              const outs = Array.isArray(d.outs) ? d.outs : [];
+              const inN = ins.length;
+              const outN = outs.length;
+              const when = (typeof t === 'number' && isFinite(t)) ? dtfFull.format(t) : '';
+              const lines = [when];
+              lines.push(`+in ${inN}${inN ? ': ' + ins.join(', ') : ''}`);
+              lines.push(`-out ${outN}${outN ? ': ' + outs.join(', ') : ''}`);
+              lines.push(`net ${inN - outN}`);
+              return `<div>${lines.filter(Boolean).join('<br/>')}</div>`;
             }
-            return `${uname} (${loginKey || ''})<br/>Time in window: ${fmtShortDur(windowMs)}<br/>Messages: ${msgCount}`;
-          } catch {
             return ' ';
-          }
+          } catch { return ' '; }
         } },
         xAxis: [
           { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },

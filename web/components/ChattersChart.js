@@ -1024,20 +1024,42 @@ export default function ChattersChart() {
               }
               return `${uname} (${loginKey || ''})<br/>Time in window: ${fmtShortDur(windowMs)}<br/>Messages: ${msgCount}`;
             }
-            // Flow bars: show timestamp, +in/-out counts and names, net
+            // Flow bars: show timestamp, paired +in/-out counts and names, net
             if (p.seriesId === 'flow-arrivals' || p.seriesId === 'flow-departures') {
               const d = p.data || {};
               const val = Array.isArray(d.value) ? d.value : (Array.isArray(p.value) ? p.value : []);
               const t = Array.isArray(val) ? val[0] : null;
-              const ins = Array.isArray(d.ins) ? d.ins : [];
-              const outs = Array.isArray(d.outs) ? d.outs : [];
-              const inN = ins.length;
-              const outN = outs.length;
+              // Look up both series entries at the same timestamp
+              let ins = Array.isArray(d.ins) ? d.ins : [];
+              let outs = Array.isArray(d.outs) ? d.outs : [];
+              try {
+                const optF = inst.getOption();
+                const series = Array.isArray(optF && optF.series) ? optF.series : [];
+                const sIn = series.find(s => s && s.id === 'flow-arrivals');
+                const sOut = series.find(s => s && s.id === 'flow-departures');
+                if (typeof t === 'number') {
+                  if (sIn && Array.isArray(sIn.data)) {
+                    const m = sIn.data.find(d0 => Array.isArray(d0 && d0.value) && d0.value[0] === t);
+                    if (m && Array.isArray(m.ins)) ins = m.ins;
+                  }
+                  if (sOut && Array.isArray(sOut.data)) {
+                    const m = sOut.data.find(d0 => Array.isArray(d0 && d0.value) && d0.value[0] === t);
+                    if (m && Array.isArray(m.outs)) outs = m.outs;
+                  }
+                }
+              } catch {}
+              const inN = Array.isArray(ins) ? ins.length : 0;
+              const outN = Array.isArray(outs) ? outs.length : 0;
+              const net = inN - outN;
               const when = (typeof t === 'number' && isFinite(t)) ? dtfFull.format(t) : '';
-              const lines = [when];
-              lines.push(`+in ${inN}${inN ? ': ' + ins.join(', ') : ''}`);
-              lines.push(`-out ${outN}${outN ? ': ' + outs.join(', ') : ''}`);
-              lines.push(`net ${inN - outN}`);
+              const border = net >= 0 ? '#10b981' : '#ef4444';
+              try { inst.setOption({ tooltip: { borderColor: border, borderWidth: 2, backgroundColor: '#fff', borderRadius: 6, textStyle: { color: '#111' } } }, { notMerge: false }); } catch {}
+              const lines = [
+                `<div style=\"font-weight:600; margin-bottom:4px;\">${when}</div>`,
+                `+in ${inN}${inN ? ': ' + ins.join(', ') : ''}`,
+                `-out ${outN}${outN ? ': ' + outs.join(', ') : ''}`,
+                `net ${net}`
+              ];
               return `<div>${lines.filter(Boolean).join('<br/>')}</div>`;
             }
             return ' ';

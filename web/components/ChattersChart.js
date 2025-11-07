@@ -148,7 +148,8 @@ export default function ChattersChart() {
       const DEFAULT_W = 60 * 60 * 1000;
       inst.setOption({
         animation: false,
-        grid: [{ left: 40, right: 56, top: 8, bottom: 30, containLabel: true }],
+        textStyle: { fontSize: 11 },
+        grid: [{ left: 40, right: 56, top: 44, bottom: 30, containLabel: true }],
         tooltip: {
           trigger: 'item',
           formatter: (p) => {
@@ -161,8 +162,8 @@ export default function ChattersChart() {
             } catch { return ' '; }
           }
         },
-        xAxis: [{ type: 'value', min: 0, max: DEFAULT_W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val), fontSize: 11 } }],
-        yAxis: [{ type: 'value', min: 0, max: 'dataMax', name: 'Users', nameTextStyle: { fontSize: 12 }, axisLabel: { fontSize: 11 } }],
+        xAxis: [{ type: 'value', name: 'Duration', nameLocation: 'middle', nameGap: 24, min: 0, max: DEFAULT_W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val), fontSize: 10 }, nameTextStyle: { fontSize: 11 } }],
+        yAxis: [{ type: 'value', min: 0, max: 'dataMax', name: 'Users', nameLocation: 'end', nameGap: 28, nameRotate: 0, nameTextStyle: { fontSize: 11, fontWeight: 400, padding: [2, 0, 0, 0] }, axisLabel: { fontSize: 10 } }],
         series: [ { type: 'bar', name: 'Duration distribution', barWidth: 10, barGap: '0%', data: [] } ],
       });
       if (typeof requestAnimationFrame !== 'undefined') {
@@ -277,7 +278,9 @@ export default function ChattersChart() {
             for (let i = 0; i < nextRows.length; i++) { if (nextRows[i] !== prev[i]) { changed = true; break; } }
           }
           if (changed) setRows(nextRows);
-          setTick(t => t + 1);
+          if (changed || arrivals > 0 || departures > 0) {
+            setTick(t => t + 1);
+          }
           const name = (login||'').trim();
           if (name) {
             const existing = loadJSON(presenceAllKeyNorm(name), loadJSON(presenceAllKeyLegacy(name), null));
@@ -290,21 +293,23 @@ export default function ChattersChart() {
             }
             saveJSON(presenceAllKeyNorm(name), base);
             setDebugObj(base);
-            // Persist flow points with names
-            const ins = arrivers.map(k => namesRef.current.get(k) || k);
-            const outs = leavers.map(k => namesRef.current.get(k) || k);
-            const pt = { t: now, in: arrivals, out: departures, ins, outs };
-            setFlowPoints(prev => {
-              const next = Array.isArray(prev) ? prev.slice() : [];
-              next.push(pt);
-              while (next.length > 5000) next.shift();
-              return next;
-            });
-            const flow = loadJSON(flowKeyNorm(name), []);
-            const nextFlow = Array.isArray(flow) ? flow.slice() : [];
-            nextFlow.push(pt);
-            while (nextFlow.length > 5000) nextFlow.shift();
-            saveJSON(flowKeyNorm(name), nextFlow);
+            // Persist flow points only when there is a change (avoid zero-noise churn)
+            if (arrivals > 0 || departures > 0) {
+              const ins = arrivers.map(k => namesRef.current.get(k) || k);
+              const outs = leavers.map(k => namesRef.current.get(k) || k);
+              const pt = { t: now, in: arrivals, out: departures, ins, outs };
+              setFlowPoints(prev => {
+                const next = Array.isArray(prev) ? prev.slice() : [];
+                next.push(pt);
+                while (next.length > 5000) next.shift();
+                return next;
+              });
+              const flow = loadJSON(flowKeyNorm(name), []);
+              const nextFlow = Array.isArray(flow) ? flow.slice() : [];
+              nextFlow.push(pt);
+              while (nextFlow.length > 5000) nextFlow.shift();
+              saveJSON(flowKeyNorm(name), nextFlow);
+            }
           }
           setPollInfo({ at: Date.now(), count: present.size, error: '' });
         }
@@ -710,7 +715,7 @@ export default function ChattersChart() {
         { type: 'time', min: minX, max: maxX, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
         { type: 'time', min: minX, max: maxX, gridIndex: 1, axisLabel: { formatter: (val) => dtfTick.format(val) } },
       ]
-    }, { notMerge: false });
+    }, { notMerge: false, lazyUpdate: true });
     inst.resize();
   }
 
@@ -978,9 +983,9 @@ export default function ChattersChart() {
       inst.setOption({
         animation: false,
         grid: [
-          { left: 40, right: 56, top: 48, height: '16%', containLabel: true }, // Present count (top)
-          { left: 40, right: 56, top: '30%', height: '50%', containLabel: true }, // Presence timeline (middle)
-          { left: 40, right: 56, top: '86%', height: '13%', containLabel: true }, // Flow (bottom, more gap)
+          { left: 40, right: 56, top: 48, height: '14%', containLabel: true }, // Present count (slightly smaller)
+          { left: 40, right: 56, top: '30%', height: '47%', containLabel: true }, // Presence timeline (a bit taller)
+          { left: 40, right: 56, top: '80%', bottom: 8, containLabel: true }, // Flow (reduced blank space under chart)
         ],
         axisPointer: { label: { formatter: (obj) => {
           const raw = obj && obj.value;
@@ -1057,7 +1062,6 @@ export default function ChattersChart() {
               const net = inN - outN;
               const when = (typeof t === 'number' && isFinite(t)) ? dtfFull.format(t) : '';
               const border = net >= 0 ? '#10b981' : '#ef4444';
-              try { inst.setOption({ tooltip: { borderColor: border, borderWidth: 2, backgroundColor: '#fff', borderRadius: 6, textStyle: { color: '#111' } } }, { notMerge: false }); } catch {}
               const lines = [
                 `<div style=\"font-weight:600; margin-bottom:4px;\">${when}</div>`,
                 `+in ${inN}${inN ? ': ' + ins.join(', ') : ''}`,
@@ -1070,14 +1074,14 @@ export default function ChattersChart() {
           } catch { return ' '; }
         } },
         xAxis: [
-          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 0, axisLabel: { formatter: (val) => dtfTick.format(val) } },
-          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 1, axisLabel: { formatter: (val) => dtfTick.format(val) } },
-          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 2, axisLabel: { formatter: (val) => dtfTick.format(val) } },
+          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 0, name: 'Present count', nameLocation: 'middle', nameGap: 20, axisLabel: { formatter: (val) => dtfTick.format(val), fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
+          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 1, name: 'Presence', nameLocation: 'middle', nameGap: 28, axisLabel: { formatter: (val) => dtfTick.format(val), fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
+          { type: 'time', boundaryGap: false, min: minX, max: maxX, gridIndex: 2, name: 'Flow (In/Out)', nameLocation: 'middle', nameGap: 14, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 8, fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
         ],
         yAxis: [
-          { type: 'value', min: 0, max: 'dataMax', gridIndex: 0, axisLabel: { show: true }, name: 'Present count' },
-          { type: 'value', min: -0.5, max: 0.5, gridIndex: 1, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, name: 'Users' },
-          { type: 'value', min: -10, max: 10, gridIndex: 2, axisLabel: { show: true }, name: 'Arrivals / Departures' },
+          { type: 'value', min: 0, max: 'dataMax', gridIndex: 0, axisLabel: { show: true, fontSize: 11 }, name: 'Present count', nameLocation: 'end', nameGap: 16, nameTextStyle: { fontSize: 12 } },
+          { type: 'value', min: -0.5, max: 0.5, gridIndex: 1, axisLabel: { show: true, fontSize: 11 }, axisTick: { show: false }, splitLine: { show: false }, name: 'Users', nameLocation: 'end', nameGap: 16, nameTextStyle: { fontSize: 12 } },
+          { type: 'value', min: -10, max: 10, gridIndex: 2, axisLabel: { show: true, fontSize: 11 }, name: 'Arrivals / Departures', nameLocation: 'end', nameGap: 16, nameTextStyle: { fontSize: 12 } },
         ],
         series: [
           {
@@ -1344,9 +1348,9 @@ export default function ChattersChart() {
         return String(val ?? '');
       } } },
       xAxis: [
-        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 0, name: 'Present count', nameLocation: 'middle', nameGap: 20, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10 } },
-        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 1, name: 'Presence', nameLocation: 'middle', nameGap: 28, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10 } },
-        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 2, name: 'Flow (In/Out)', nameLocation: 'middle', nameGap: 24, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10 } },
+        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 0, name: 'Present count', nameLocation: 'middle', nameGap: 20, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10, fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
+        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 1, name: 'Presence', nameLocation: 'middle', nameGap: 28, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10, fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
+        { type: 'time', boundaryGap: false, min: (typeof selStart === 'number' ? selStart : fullMin), max: (typeof selEnd === 'number' ? selEnd : fullMax), gridIndex: 2, name: 'Flow (In/Out)', nameLocation: 'middle', nameGap: 24, axisLabel: { formatter: (val) => dtfTick.format(val), margin: 10, fontSize: 11 }, nameTextStyle: { fontSize: 12 } },
       ],
     }, { notMerge: false });
     inst.resize();
@@ -1358,7 +1362,6 @@ export default function ChattersChart() {
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
-    const now = nowMarkTs;
     const ptsAll = Array.isArray(flowPoints) ? flowPoints : [];
     // Determine current visible window from selected window first, then dataZoom, then axes
     const opt = inst.getOption();
@@ -1413,22 +1416,14 @@ export default function ChattersChart() {
       inst.setOption({
         yAxis: [{}, {}, { min: yMin, max: yMax }],
         series: [
-          { id: 'flow-arrivals', data: inData },
-          { id: 'flow-departures', data: outData },
+          { id: 'flow-arrivals', zlevel: 1, z: 10, silent: false, animation: false, progressive: 0, hoverAnimation: false, data: inData },
+          { id: 'flow-departures', zlevel: 1, z: 10, silent: false, animation: false, progressive: 0, hoverAnimation: false, data: outData },
         ],
-      }, { notMerge: false });
+      }, { notMerge: false, lazyUpdate: true });
       window.__tm_flow_cache = { inSig, outSig, yRange: [yMin, yMax] };
-    } else {
-      // Even if range didn't change, refresh series data
-      inst.setOption({
-        series: [
-          { id: 'flow-arrivals', data: inData },
-          { id: 'flow-departures', data: outData },
-        ],
-      }, { notMerge: false });
     }
-    inst.resize();
-  }, [flowPoints, winStart, winEnd, chartReady, nowMarkTs]);
+    // No resize here; avoid forcing full redraws on every data update
+  }, [flowPoints, winStart, winEnd, chartReady]);
 
   // Recompute and render duration distribution for current window
   useEffect(() => {
@@ -1514,8 +1509,9 @@ export default function ChattersChart() {
       } catch {}
     }
     inst.setOption({
-      xAxis: [{ type: 'value', name: 'Duration', nameLocation: 'middle', nameGap: 28, min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val), fontSize: 11 }, nameTextStyle: { fontSize: 12 } }],
-      yAxis: [{ type: 'value', min: 0, max: axisMax, name: 'Users', nameTextStyle: { fontSize: 12 }, axisLabel: { fontSize: 11 } }],
+      textStyle: { fontSize: 11 },
+      xAxis: [{ type: 'value', name: 'Duration', nameLocation: 'middle', nameGap: 24, min: 0, max: W, boundaryGap: false, axisLabel: { formatter: (val) => fmtShortDur(val), fontSize: 10 }, nameTextStyle: { fontSize: 11 } }],
+      yAxis: [{ type: 'value', min: 0, max: axisMax, name: 'Users', nameLocation: 'end', nameGap: 28, nameRotate: 0, nameTextStyle: { fontSize: 11, fontWeight: 400, padding: [2, 0, 0, 0] }, axisLabel: { fontSize: 10 } }],
       series: [
         {
           type: 'bar',
@@ -1561,19 +1557,19 @@ export default function ChattersChart() {
       ]
     }, { notMerge: false });
     inst.resize();
-  }, [tick, nowMarkTs, winStart, winEnd, fitMode, chartReady, sessions]);
+  }, [tick, winStart, winEnd, fitMode, chartReady, sessions]);
 
-  // Update series data when rows or segments change
+  // Update series data when rows or segments change (not on time ticks)
   useEffect(() => {
     const inst = chartInstance.current;
     if (!inst) return;
-    const now = nowMarkTs;
     const dataArr = [];
     // Determine current window from chart option for clipping
     let wStart = null, wEnd = null;
     const opt = inst.getOption();
     const xa = opt && opt.xAxis && opt.xAxis[1] || {};
     if (typeof xa.min === 'number' && typeof xa.max === 'number') { wStart = xa.min; wEnd = xa.max; }
+    const nowForOpen = (typeof wEnd === 'number') ? wEnd : Date.now();
     const segs = segmentsRef.current;
     for (let i = 0; i < visRows.length; i++) {
       const loginKey = visRows[i];
@@ -1582,7 +1578,7 @@ export default function ChattersChart() {
       const presentFlag = (arr.length > 0 && arr[arr.length - 1].end == null) ? 1 : 0;
       for (let idx = 0; idx < arr.length; idx++) {
         const seg = arr[idx];
-        const segEnd = (seg.end == null ? now : seg.end);
+        const segEnd = (seg.end == null ? nowForOpen : seg.end);
         let s0 = seg.start;
         let e0 = segEnd;
         let clipL = 0, clipR = 0;
@@ -1599,7 +1595,7 @@ export default function ChattersChart() {
         const st = typeof s.start === 'number' ? s.start : Date.parse(s.id);
         const en = (s.end || null);
         if (typeof st === 'number') {
-          sessAreas.push([{ xAxis: st }, { xAxis: en || now }]);
+          sessAreas.push([{ xAxis: st }, { xAxis: en || nowForOpen }]);
         }
       }
     }
@@ -1630,8 +1626,6 @@ export default function ChattersChart() {
           events.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
           let cur = 0; const out = [];
           for (const ev of events) { cur += ev[1]; out.push([ev[0], Math.max(0, cur)]); }
-          if (out.length === 0) return out;
-          out.push([now, Math.max(0, cur)]);
           return out;
         })(),
       },
@@ -1667,7 +1661,8 @@ export default function ChattersChart() {
           if (clipR) children.push({ type: 'rect', shape: { x: left + Math.max(0, width - stubW - 1), y: y - stubH / 2, width: stubW, height: stubH }, style: stubStyle });
           return { type: 'group', children };
         },
-        universalTransition: true,
+        // Disable universal transitions to avoid animated reflows on every update
+        // universalTransition: true,
         clip: true,
         dimensions: ['start', 'end', 'row', 'present', 'clipL', 'clipR'],
         encode: { x: [0, 1], y: 2 },
@@ -1720,15 +1715,36 @@ export default function ChattersChart() {
       seriesUpdate.push({ id: 'presence-sel', silent: true, tooltip: { show: false } });
     }
     inst.setOption({
-      yAxis: [
-        { type: 'value', min: 0, max: 'dataMax', minInterval: 1, gridIndex: 0, axisLabel: { show: true }, name: 'Present count' },
-        { type: 'value', min: -0.5, max: visRows.length - 0.5, gridIndex: 1, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, name: 'Users' },
-        { type: 'value', min: (window.__tm_flow_cache?.yRange?.[0] ?? -10), max: (window.__tm_flow_cache?.yRange?.[1] ?? 10), minInterval: 1, gridIndex: 2, axisLabel: { show: true }, name: 'Arrivals / Departures' }
-      ],
+      // Do NOT touch yAxis here to avoid full layout; only update series
       series: seriesUpdate
     }, { notMerge: false });
-    inst.resize();
-  }, [visRows, tick, sessions, nowMarkTs]);
+    // No resize; avoid full redraw on tick
+  }, [visRows, tick, sessions]);
+
+  // Lightweight: update only the current time mark line for the presence grid
+  useEffect(() => {
+    const inst = chartInstance.current;
+    if (!inst) return;
+    try {
+      inst.setOption({ series: [{ id: 'presence', markLine: { symbol: 'none', lineStyle: { color: '#94a3b8', width: 1, type: 'solid' }, label: { show: true, formatter: (p) => {
+        try { const v = (p && (typeof p.value === 'number' ? p.value : (typeof p.xAxis === 'number' ? p.xAxis : null))); return (typeof v === 'number' && isFinite(v)) ? dtfFull.format(v) : ''; } catch { return ''; }
+      }, color: '#475569', backgroundColor: 'transparent' }, silent: true, data: [{ xAxis: nowMarkTs }] } }] }, { notMerge: false });
+    } catch {}
+  }, [nowMarkTs]);
+
+  // Update y-axes for grids 0 and 1 only when the visible rows count changes
+  useEffect(() => {
+    const inst = chartInstance.current;
+    if (!inst) return;
+    try {
+      inst.setOption({
+        yAxis: [
+          { type: 'value', min: 0, max: 'dataMax', minInterval: 1, gridIndex: 0, axisLabel: { show: true }, name: 'Present count', nameLocation: 'end', nameGap: 16 },
+          { type: 'value', min: -0.5, max: visRows.length - 0.5, gridIndex: 1, axisLabel: { show: true }, axisTick: { show: false }, splitLine: { show: false }, name: 'Users', nameLocation: 'end', nameGap: 16 }
+        ]
+      }, { notMerge: false });
+    } catch {}
+  }, [visRows.length]);
 
   // Compute and render chat message dots for current window
   useEffect(() => {
@@ -1759,7 +1775,6 @@ export default function ChattersChart() {
         }
       }
       inst.setOption({ series: [{ id: 'chat-dots', data: showMsgDots ? pts : [] }] }, { notMerge: false });
-      inst.resize();
     } catch {}
   }, [showMsgDots, winStart, winEnd, visRows, chartReady, messagesTick]);
 
@@ -1860,7 +1875,7 @@ export default function ChattersChart() {
       }
       inst.setOption({ series: [{ id: 'presence-sel', data: all }] }, { notMerge: false });
     } catch {}
-  }, [selectedLogins, winStart, winEnd, nowMarkTs, chartReady]);
+  }, [selectedLogins, winStart, winEnd, chartReady]);
 
   // Keep tooltip in sync with selected user (show most recent visible segment)
   useEffect(() => {
@@ -1906,7 +1921,7 @@ export default function ChattersChart() {
         inst.dispatchAction({ type: 'hideTip' });
       }
     } catch {}
-  }, [selectedLogin, visRows, tick, winStart, winEnd, chartReady, nowMarkTs]);
+  }, [selectedLogin, visRows, tick, winStart, winEnd, chartReady]);
 
   // Hover handlers to populate highlight overlay for the hovered user
   useEffect(() => {
@@ -1964,7 +1979,7 @@ export default function ChattersChart() {
       inst.off('mouseover', onOver);
       inst.off('globalout', onOut);
     };
-  }, [chartReady, nowMarkTs]);
+  }, [chartReady]);
 
   // Click-to-select (persistent selection), independent of pin mode
   useEffect(() => {
@@ -2248,29 +2263,33 @@ export default function ChattersChart() {
       {pollInfo.error && (<Text color="red" as="p">Polling error: <Code>{pollInfo.error}</Code></Text>)}
       {!pollInfo.error && pollInfo.at && (<Text color="gray" as="p">Last poll: {dtfFull.format(pollInfo.at)} — present: {pollInfo.count}</Text>)}
       <Separator my="3" />
-      <Flex align="center" gap="2" wrap="wrap">
-        <Button variant="soft" onClick={() => setTzEditing(true)}>{`Timezone: ${timeZone === 'system' ? 'System' : timeZone}`}</Button>
-        <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
-        <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
-        <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
-        <Button variant="soft" color="red" onClick={clearChatterAndSessions}>Clear chatter + sessions</Button>
-        {/* Capture chat messages and Show chat dots controls removed; always on */}
-        <Button
-          variant="soft"
-          onClick={() => { const next = (filterMode === 'all' ? 'present' : (filterMode === 'present' ? 'messagers' : 'all')); setFilterMode(next); const name = (login||'').trim(); if (name) saveJSON(filterKeyNorm(name), next); }}
-        >{`Filter: ${filterMode === 'all' ? 'all' : (filterMode === 'present' ? 'in chat now' : 'messagers')}`}</Button>
-        <Button
-          variant="soft"
-          color="indigo"
-          onClick={() => { const next = (sortMode === 'default' ? 'time' : (sortMode === 'time' ? 'ins' : 'default')); setSortMode(next); const name = (login||'').trim(); if (name) saveJSON(sortKeyNorm(name), next); }}
-        >{`Sort: ${sortMode === 'time' ? 'time in room' : (sortMode === 'ins' ? 'INs' : 'ins/outs')}`}</Button>
-        <Button
-          variant="soft"
-          color="indigo"
-          onClick={() => { const next = !groupByPresent; setGroupByPresent(next); const name = (login||'').trim(); if (name) saveJSON(groupKeyNorm(name), next); }}
-        >{`Group: ${groupByPresent ? 'in room/not' : 'none'}`}</Button>
-        <Button variant={pinMode ? 'solid' : 'soft'} color="indigo" onClick={() => setPinMode(v => !v)}>Pin mode</Button>
-        <TextField.Root value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users" />
+      <Flex direction="column" gap="2">
+        <Flex align="center" gap="2" wrap="wrap">
+          <Button variant="soft" onClick={() => setTzEditing(true)}>{`Timezone: ${timeZone === 'system' ? 'System' : timeZone}`}</Button>
+          <Button variant={showDebug ? 'solid' : 'soft'} onClick={() => setShowDebug(v => !v)}>Debug</Button>
+          <Button variant="soft" color="gray" onClick={exportPresenceJson}>Export JSON</Button>
+          <Button variant="soft" color="gray" onClick={importPresenceJson}>Import JSON</Button>
+          <Button variant="soft" color="red" onClick={clearChatterAndSessions}>Clear chatter + sessions</Button>
+        </Flex>
+        <Flex align="center" gap="2" wrap="wrap">
+          {/* Capture chat messages and Show chat dots controls removed; always on */}
+          <Button
+            variant="soft"
+            onClick={() => { const next = (filterMode === 'all' ? 'present' : (filterMode === 'present' ? 'messagers' : 'all')); setFilterMode(next); const name = (login||'').trim(); if (name) saveJSON(filterKeyNorm(name), next); }}
+          >{`Filter: ${filterMode === 'all' ? 'all' : (filterMode === 'present' ? 'in chat now' : 'messagers')}`}</Button>
+          <Button
+            variant="soft"
+            color="indigo"
+            onClick={() => { const next = (sortMode === 'default' ? 'time' : (sortMode === 'time' ? 'ins' : 'default')); setSortMode(next); const name = (login||'').trim(); if (name) saveJSON(sortKeyNorm(name), next); }}
+          >{`Sort: ${sortMode === 'time' ? 'time in room' : (sortMode === 'ins' ? 'INs' : 'ins/outs')}`}</Button>
+          <Button
+            variant="soft"
+            color="indigo"
+            onClick={() => { const next = !groupByPresent; setGroupByPresent(next); const name = (login||'').trim(); if (name) saveJSON(groupKeyNorm(name), next); }}
+          >{`Group: ${groupByPresent ? 'in room/not' : 'none'}`}</Button>
+          <Button variant={pinMode ? 'solid' : 'soft'} color="indigo" onClick={() => setPinMode(v => !v)}>Pin mode</Button>
+          <TextField.Root value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users" />
+        </Flex>
       </Flex>
       {tzEditing && (
         <Box mt="2">
@@ -2460,7 +2479,6 @@ export default function ChattersChart() {
           </Flex>
         </Box>
       )}
-      <Heading size="3">Duration distribution</Heading>
       <Box mt="2" style={{ height: 180 }}>
         <div ref={distChartRef} style={{ width: '100%', height: '100%' }} />
       </Box>

@@ -335,6 +335,7 @@ Notes:
 - GitHub Pages:
   - Build with a proper NEXT_PUBLIC_BASE_PATH (e.g., /<repo>) and host under https://<user>.github.io/<repo>/.
   - Redirect URI becomes https://<user>.github.io/<repo>/callback/.
+- Note that the various tools report different paths for the app.  /media/david/bigwork/twitch-mon/web/ and /home/david/bigwork/twitch-mon/web/ are both valid.
 
 ## Troubleshooting
 
@@ -348,11 +349,7 @@ Notes:
 
 ## Note
 
-- Y axis for total in room
-- more useful leaving
-- sorting by arrival
-- sort by duration in the 
-- dot for each chat
-- what's on in the stream - log chats
-- cursor up and down to select
-- select
+- Main chart: total in room should re-range for the current window, not all time
+- duration in room chart should have consistent y axis label
+- all chart titles should be consistent and bolder
+
